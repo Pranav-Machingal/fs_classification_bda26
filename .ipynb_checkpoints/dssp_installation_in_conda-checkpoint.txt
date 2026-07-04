@@ -1,0 +1,64 @@
+Step 1: Clean the Slate and Get the Tools
+First, make sure your environment is activated. Then, we will install all the necessary build tools and dependencies directly from conda-forge so they all share the exact same C++ standard.
+
+Bash
+conda activate omega
+
+# Install the modern C++ toolchain and required dependencies (zlib, bzip2, pcre2)
+conda install -c conda-forge cmake make pkg-config "gcc_linux-64>=13" "gxx_linux-64>=13" zlib bzip2 pcre2
+Step 2: Build the Core Library (libcifpp)
+DSSP cannot be built until its parser library, libcifpp, is built and installed first.
+
+Run these commands one by one to download, configure, and install it. Notice the special RPATH flags in the CMake command—this is the magic that prevents the Segmentation Faults.
+
+Bash
+# Go to your working directory (e.g., ~/omega)
+cd ~/omega
+
+# Download the source code
+git clone https://github.com/PDB-REDO/libcifpp.git
+cd libcifpp
+
+# Configure with RPATH pointing exclusively to your Conda environment
+cmake -S . -B build \
+  -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
+  -DCMAKE_INSTALL_RPATH=$CONDA_PREFIX/lib \
+  -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+
+# Compile and install (this will take a few minutes)
+cmake --build build -j 4
+cmake --install build
+(Note: During the install step, it should automatically download mmcif_pdbx.dic and components.cif safely into your Conda prefix).
+
+Step 3: Build dssp
+Now that the parser is installed, we move back out and build the actual dssp application.
+
+Bash
+cd ~/omega
+
+# Download the DSSP source code
+git clone https://github.com/PDB-REDO/dssp.git
+cd dssp
+
+# Configure with the same RPATH magic
+cmake -S . -B build \
+  -DCMAKE_INSTALL_PREFIX=$CONDA_PREFIX \
+  -DCMAKE_INSTALL_RPATH=$CONDA_PREFIX/lib \
+  -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+
+# Compile and install
+cmake --build build -j 4
+cmake --install build
+Step 4: Verify the Installation
+Before touching Python, let's verify that the RPATH fix worked and the binary is stable.
+
+First, check that it correctly bound to your Conda libraries, not your system libraries:
+
+Bash
+ldd $CONDA_PREFIX/bin/mkdssp | grep libstdc++
+(This should output a path containing anaconda3/envs/omega/lib/, proving it is isolated).
+
+Finally, test the executable on your file:
+
+Bash
+mkdssp cif_files/5JYT.cif
