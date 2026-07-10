@@ -34,7 +34,7 @@ from classifier_utils import (
 
 # --- 1. Parse Command Line Arguments ---
 parser = argparse.ArgumentParser(description="Train cuML SVM classifiers (Unified Pipeline).")
-parser.add_argument('--feature_type', type=str, default='fusionprot', choices=['kndrf', 'fusionprot', 'saprot'], help="Feature set to use for training")
+parser.add_argument('--feature_type', type=str, default='fusionprot', choices=['kndrf', 'fusionprot', 'saprot', 'protssn'], help="Feature set to use for training")
 parser.add_argument('--k', type=int, default=3, help="k value (Used only if feature_type is 'kndrf')")
 parser.add_argument('--n_jobs', type=int, default=2, help="Number of parallel Optuna trials")
 parser.add_argument('--n_trials', type=int, default=30, help="Total number of hyperparameter combinations to test")
@@ -67,6 +67,8 @@ if FEATURE_TYPE == 'fusionprot':
   BASE_DIR = Path('saved_data/svm_experiments_fusionprot')
 elif FEATURE_TYPE == 'saprot':
   BASE_DIR = Path('saved_data/svm_experiments_saprot')
+elif FEATURE_TYPE == 'protssn':
+  BASE_DIR = Path('saved_data/svm_experiments_protssn')
 else:
   BASE_DIR = Path(f'saved_data/svm_experiments_k{K_VAL}')
 
@@ -302,6 +304,8 @@ if __name__ == "__main__":
     data = np.load('saved_data/feature_extraction/fusionprot.npz') 
   elif FEATURE_TYPE == 'saprot':
     data = np.load('saved_data/feature_extraction/saprot.npz')
+  elif FEATURE_TYPE == 'protssn':
+    data = np.load('saved_data/feature_extraction/protssn.npz')
   else:
     data = np.load(f'saved_data/feature_extraction/k{K_VAL}ndrf.npz') 
   
@@ -313,7 +317,7 @@ if __name__ == "__main__":
   y_test_raw = data['y_test']
   
   # --- CRITICAL FIX: Standardize Embeddings (FusionProt & SaProt) ---
-  if FEATURE_TYPE in ['fusionprot', 'saprot']:
+  if FEATURE_TYPE in ['fusionprot', 'saprot', 'protssn']:
     print(f"Standardizing {FEATURE_TYPE.capitalize()} embeddings (Fitting on Train)...")
     scaler = StandardScaler()
     
