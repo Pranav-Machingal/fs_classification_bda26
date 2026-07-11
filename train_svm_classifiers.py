@@ -329,27 +329,26 @@ if __name__ == "__main__":
   y_test_raw = data['y_test']
   
   # --- CRITICAL FIX: Standardize Embeddings (FusionProt & SaProt) ---
-  if FEATURE_TYPE in ['fusionprot', 'saprot', 'protssn', 'prosst']:
-    print(f"Standardizing {FEATURE_TYPE.capitalize()} embeddings (Fitting on Train)...")
-    scaler = StandardScaler()
-    
-    # Fill any potential NaNs in the raw data with 0 before scaling
-    X_train_raw = np.nan_to_num(X_train_raw)
-    X_val_raw = np.nan_to_num(X_val_raw)
-    X_test_raw = np.nan_to_num(X_test_raw)
+  print(f"Standardizing {FEATURE_TYPE.capitalize()} features (Fitting on Train)...")
+  scaler = StandardScaler()
+  
+  # Fill any potential NaNs in the raw data with 0 before scaling
+  X_train_raw = np.nan_to_num(X_train_raw)
+  X_val_raw = np.nan_to_num(X_val_raw)
+  X_test_raw = np.nan_to_num(X_test_raw)
 
-    X_train_raw = scaler.fit_transform(X_train_raw).astype(np.float32)
-    X_val_raw = scaler.transform(X_val_raw).astype(np.float32)
-    X_test_raw = scaler.transform(X_test_raw).astype(np.float32)
-    
-    # Catch any NaNs introduced BY the scaler (e.g., zero-variance features divided by zero)
-    X_train_raw = np.nan_to_num(X_train_raw)
-    X_val_raw = np.nan_to_num(X_val_raw)
-    X_test_raw = np.nan_to_num(X_test_raw)
+  X_train_raw = scaler.fit_transform(X_train_raw).astype(np.float32)
+  X_val_raw = scaler.transform(X_val_raw).astype(np.float32)
+  X_test_raw = scaler.transform(X_test_raw).astype(np.float32)
+  
+  # Catch any NaNs introduced BY the scaler (e.g., zero-variance features divided by zero)
+  X_train_raw = np.nan_to_num(X_train_raw)
+  X_val_raw = np.nan_to_num(X_val_raw)
+  X_test_raw = np.nan_to_num(X_test_raw)
 
-    scaler_path = MODELS_DIR / f'{FEATURE_TYPE}_scaler.joblib'
-    joblib.dump(scaler, scaler_path)
-    print(f"Saved fitted StandardScaler to {scaler_path}")
+  scaler_path = MODELS_DIR / f'{FEATURE_TYPE}_scaler.joblib'
+  joblib.dump(scaler, scaler_path)
+  print(f"Saved fitted StandardScaler to {scaler_path}")
 
   # --- 6. Decode Labels ---
   train_orig, y_train_bin, y_train_3c = decode_labels(y_train_raw)

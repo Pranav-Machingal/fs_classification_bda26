@@ -36,39 +36,45 @@ def compute_103d_features(csv_file_path, cif_dir):
       df_atoms = pd.DataFrame({
         'res_id': array.res_id,
         'atom_name': array.atom_name,
+        'element': array.element,
         'x': array.coord[:,0],
         'y': array.coord[:,1],
         'z': array.coord[:,2]
       })
     except Exception as e:
-      df_atoms = pd.DataFrame(columns=['res_id', 'atom_name', 'x', 'y', 'z'])
+      df_atoms = pd.DataFrame(columns=['res_id', 'atom_name', 'element', 'x', 'y', 'z'])
       
     n_res = len(group)
     seq_ids = group['Residue_ID'].values
     res_names = group['Residue_Name'].values
     ss_labels = group['SS_Label'].values
     
-    # 1. Extract CA and CB coordinates
-    ca_coords = np.full((n_res, 3), np.nan)
-    cb_coords = np.full((n_res, 3), np.nan)
+    # 1. Extract centre of mass coordinates for each residue
+    com_coords = np.full((n_res, 3), np.nan)
+    
+    # Standard atomic masses
+    mass_map = {'C': 12.011, 'N': 14.007, 'O': 15.999, 'S': 32.065, 'H': 1.008}
     
     for i, res_id in enumerate(seq_ids):
       atoms = df_atoms[df_atoms['res_id'] == res_id]
-      ca = atoms[atoms['atom_name'] == 'CA']
-      if len(ca) > 0: ca_coords[i] = ca[['x','y','z']].values[0]
-      
-      cb = atoms[atoms['atom_name'] == 'CB']
-      if len(cb) > 0: cb_coords[i] = cb[['x','y','z']].values[0]
+      if len(atoms) > 0:
+        coords = atoms[['x', 'y', 'z']].values
+        elements = atoms['element'].values
+        
+        # Determine masses for each atom, defaulting to 12.0 (Carbon) if unknown
+        masses = np.array([mass_map.get(el.upper(), 12.0) for el in elements]).reshape(-1, 1)
+        
+        # Calculate the centre of mass
+        com = np.sum(coords * masses, axis=0) / np.sum(masses)
+        com_coords[i] = com
         
     # 2. Compute pairwise distances (fill NaNs with inf to avoid warnings and false positives)
-    cb_clean = np.where(np.isnan(cb_coords), np.inf, cb_coords)
-    ca_clean = np.where(np.isnan(ca_coords), np.inf, ca_coords)
+    com_clean = np.where(np.isnan(com_coords), np.inf, com_coords)
     
-    dist_cb = cdist(cb_clean, cb_clean)
-    dist_ca = cdist(ca_clean, ca_clean)
+    dist_com = cdist(com_clean, com_clean)
     
-    # Contact map: C_beta < 8A or C_alpha < 7A
-    contact_map = (dist_cb < 8.0) | (dist_ca < 7.0)
+    # Contact map: distance between centres of mass < 8A
+    contact_map = (dist_com < 8.0)
     
     # 3. Precompute AA and SS one-hot encodings
     aa_one_hot = np.zeros((n_res, 20))
