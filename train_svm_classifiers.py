@@ -2,106 +2,21 @@ import numpy as np
 import pandas as pd
 import pickle
 import joblib
-import sys
-import argparse
-from pathlib import Path
-from tqdm.auto import tqdm
 
-# Enable Scikit-Learn Metadata Routing to allow sample_weights inside OvO/OvR wrappers
 import sklearn
 sklearn.set_config(enable_metadata_routing=True)
 
-# Preprocessing for numerical stability
-from sklearn.preprocessing import StandardScaler
-
-# RAPIDS cuML for GPU Acceleration
 from cuml.svm import SVC, LinearSVC
-
-# Scikit-learn wrappers
 from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 
-# Import helper functions
-from classifier_utils import (
-  decode_labels, compute_test_metrics, SS_CLASSES, compute_switch_f1,
-  StateRoutedCombinedClassifier
-)
+from config import get_args, setup_directories, SS_CLASSES
+from data_loader import load_and_preprocess_data
+from metrics import compute_test_metrics, compute_switch_f1, decode_labels
+from tuning_utils import get_weights, get_log_grid, get_linear_grid
+from models import StateRoutedCombinedClassifier
 
-# --- 1. Parse Command Line Arguments ---
-parser = argparse.ArgumentParser(description="Train cuML SVM classifiers (GridSearch Pipeline).")
-parser.add_argument('--feature_type', type=str, default='fusionprot', choices=['kndrf', 'kncsic', 'fusionprot', 'saprot', 'protssn', 'prosst'], help="Feature set to use for training")
-parser.add_argument('--k', type=int, default=3, help="k value (Used only if feature_type is 'kndrf' or 'kncsic')")
-parser.add_argument('--tasks', nargs='+', default=['all'], 
-                    choices=['all', 'global_binary', 'global_3class', 'input_dep_binary', 'input_dep_3class'],
-                    help="Which classifier suites to train")
-args = parser.parse_args()
-
-FEATURE_TYPE = args.feature_type
-K_VAL = args.k
-tasks_to_run = args.tasks
-
-if 'all' in tasks_to_run:
-  tasks_to_run = ['global_binary', 'global_3class', 'input_dep_binary', 'input_dep_3class']
-
-# Use threading backend for cuML to share the CUDA context safely.
-BACKEND = "threading"
-
-# --- 2. Setup Directories ---
-if FEATURE_TYPE == 'fusionprot':
-  BASE_DIR = Path('saved_data/svm_experiments_fusionprot')
-elif FEATURE_TYPE == 'saprot':
-  BASE_DIR = Path('saved_data/svm_experiments_saprot')
-elif FEATURE_TYPE == 'protssn':
-  BASE_DIR = Path('saved_data/svm_experiments_protssn')
-elif FEATURE_TYPE == 'prosst':
-  BASE_DIR = Path('saved_data/svm_experiments_prosst')
-elif FEATURE_TYPE == 'kncsic':
-  BASE_DIR = Path(f'saved_data/svm_experiments_k{K_VAL}_ncsic')
-elif FEATURE_TYPE == 'kndrf':
-  BASE_DIR = Path(f'saved_data/svm_experiments_k{K_VAL}_ndrf')
-else:
-  raise ValueError(f"Unknown feature type: {FEATURE_TYPE}")
-
-MODELS_DIR = BASE_DIR / 'models'
-METRICS_DIR = BASE_DIR / 'metrics'
-TUNING_DIR = BASE_DIR / 'tuning'
-CURVES_DIR = BASE_DIR / 'curves'
-
-for d in [MODELS_DIR, METRICS_DIR, TUNING_DIR, CURVES_DIR]:
-  d.mkdir(parents=True, exist_ok=True)
-
-# --- 3. Grid Search Helpers ---
-def get_weights(y_bin, a):
-  r_plus = 1.0 / (2 * a)
-  r_minus = 1.0 / (2 * (1 - a))
-  weights = np.zeros_like(y_bin, dtype=np.float32)
-  weights[y_bin == 1] = r_plus
-  weights[y_bin == 0] = r_minus
-  return weights
-
-def get_log_grid(best_val, step, round_num):
-  if round_num == 1:
-    return np.array([-4.0, -2.0, 0.0, 2.0, 4.0]), 2.0
-  elif round_num == 2:
-    new_step = step / 3.0
-    return np.array([best_val - 2*new_step, best_val - new_step, best_val, best_val + new_step, best_val + 2*new_step]), new_step
-  elif round_num == 3:
-    new_step = step / 2.0
-    return np.array([best_val - new_step, best_val, best_val + new_step]), new_step
-
-def get_linear_grid(best_val, step, round_num, a_bar):
-  if round_num == 1:
-    new_step = a_bar / 4.0
-    return np.array([a_bar - 2*new_step, a_bar - new_step, a_bar, a_bar + new_step, a_bar + 2*new_step]), new_step
-  elif round_num == 2:
-    new_step = step / 3.0
-    return np.array([best_val - 2*new_step, best_val - new_step, best_val, best_val + new_step, best_val + 2*new_step]), new_step
-  elif round_num == 3:
-    new_step = step / 2.0
-    return np.array([best_val - new_step, best_val, best_val + new_step]), new_step
-
-# --- 4. Core Tuning & Evaluation Engine ---
-def save_evaluation(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw):
+def save_evaluation(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs):
   y_test_pred = best_model.predict(X_test)
   
   if hasattr(best_model, "predict_proba"):
@@ -117,31 +32,31 @@ def save_evaluation(best_model, X_test, y_test, is_binary, classes, task_name, t
 
   prefix = f'{task_name}_binary_best_f1'
   
-  joblib.dump(best_model, MODELS_DIR / f'{prefix}_model.joblib')
+  joblib.dump(best_model, dirs['models'] / f'{prefix}_model.joblib')
     
-  with open(CURVES_DIR / f'{prefix}_curves.pkl', 'wb') as f:
+  with open(dirs['curves'] / f'{prefix}_curves.pkl', 'wb') as f:
     pickle.dump(curves, f)
-  np.save(METRICS_DIR / f'{prefix}_confusion_matrix.npy', cm)
+  np.save(dirs['metrics'] / f'{prefix}_confusion_matrix.npy', cm)
   
   return metrics_dict
 
-def evaluate_and_summarize(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, force_eval=False):
-  summary_path = METRICS_DIR / f'{task_name}_binary_test_summary.pkl'
+def evaluate_and_summarize(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs, force_eval=False):
+  summary_path = dirs['metrics'] / f'{task_name}_binary_test_summary.pkl'
   if summary_path.exists() and not force_eval:
     print(f"  -> Skipping Evaluation for {task_name} (Already computed)")
     return
 
   print(f"  -> Testing Best Switch-F1 Model for {task_name}")
-  metrics = save_evaluation(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw)
+  metrics = save_evaluation(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs)
   
   summary = {'best_f1_model_test_metrics': metrics}
   with open(summary_path, 'wb') as f:
     pickle.dump(summary, f)
 
-def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, multi_strategy=None):
-  summary_path = METRICS_DIR / f'{task_name}_binary_test_summary.pkl'
-  tuning_csv_path = TUNING_DIR / f'{task_name}_binary_tuning.csv'
-  f1_model_path = MODELS_DIR / f'{task_name}_binary_best_f1_model.joblib'
+def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy=None):
+  summary_path = dirs['metrics'] / f'{task_name}_binary_test_summary.pkl'
+  tuning_csv_path = dirs['tuning'] / f'{task_name}_binary_tuning.csv'
+  f1_model_path = dirs['models'] / f'{task_name}_binary_best_f1_model.joblib'
   
   is_binary = (multi_strategy is None)
   classes = [0, 1] if is_binary else [0, 1, 2]
@@ -280,86 +195,43 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
   sample_weights = get_weights(y_train_bin_raw, best_global_params['a'])
   best_model.fit(X_train, y_train, sample_weight=sample_weights)
   
-  evaluate_and_summarize(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, force_eval=True)
+  evaluate_and_summarize(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs, force_eval=True)
   
   return best_model
 
-# --- 5. Multi-Class Execution Suite ---
-def run_multi_class_suite(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, base_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw):
+def run_multi_class_suite(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, base_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs):
   mdls = {}
-  mdls['CommonC_OvO'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvO", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, multi_strategy='ovo')
-  mdls['CommonC_OvR'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvR", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, multi_strategy='ovr')
+  mdls['CommonC_OvO'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvO", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovo')
+  mdls['CommonC_OvR'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvR", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovr')
   return mdls
 
 if __name__ == "__main__":
-  # --- 6. Data Assembly Pipeline ---
-  print(f"Loading {FEATURE_TYPE} data...")
-  if FEATURE_TYPE == 'fusionprot':
-    data = np.load('saved_data/feature_extraction/fusionprot.npz') 
-  elif FEATURE_TYPE == 'saprot':
-    data = np.load('saved_data/feature_extraction/saprot.npz')
-  elif FEATURE_TYPE == 'protssn':
-    data = np.load('saved_data/feature_extraction/protssn.npz')
-  elif FEATURE_TYPE == 'prosst':
-    data = np.load('saved_data/feature_extraction/prosst.npz')
-  elif FEATURE_TYPE == 'kncsic':
-    data = np.load(f'saved_data/feature_extraction/k{K_VAL}ncsic.npz')
-  elif FEATURE_TYPE == 'kndrf':
-    data = np.load(f'saved_data/feature_extraction/k{K_VAL}ndrf.npz') 
-  else:
-    raise ValueError(f"Unknown feature type: {FEATURE_TYPE}")
+  args = get_args()
+  dirs = setup_directories(args.feature_type, args.k)
   
-  X_train_raw = np.float32(data['X_train'])
-  y_train_raw = data['y_train']
-  X_val_raw = np.float32(data['X_val'])
-  y_val_raw = data['y_val']
-  X_test_raw = np.float32(data['X_test'])
-  y_test_raw = data['y_test']
+  data = load_and_preprocess_data(args.feature_type, args.k, dirs['models'])
   
-  print(f"Standardizing {FEATURE_TYPE.capitalize()} features (Fitting on Train)...")
-  scaler = StandardScaler()
-  
-  X_train_raw = np.nan_to_num(X_train_raw)
-  X_val_raw = np.nan_to_num(X_val_raw)
-  X_test_raw = np.nan_to_num(X_test_raw)
+  X_train_raw, y_train_raw, y_train_bin, y_train_3c, train_orig = data['X_train'], data['y_train_raw'], data['y_train_bin'], data['y_train_3c'], data['train_orig']
+  X_val_raw, y_val_raw, y_val_bin, y_val_3c, val_orig = data['X_val'], data['y_val_raw'], data['y_val_bin'], data['y_val_3c'], data['val_orig']
+  X_test_raw, y_test_raw, y_test_bin, y_test_3c, test_orig, test_states_idx = data['X_test'], data['y_test_raw'], data['y_test_bin'], data['y_test_3c'], data['test_orig'], data['test_states_idx']
 
-  X_train_raw = scaler.fit_transform(X_train_raw).astype(np.float32)
-  X_val_raw = scaler.transform(X_val_raw).astype(np.float32)
-  X_test_raw = scaler.transform(X_test_raw).astype(np.float32)
-  
-  X_train_raw = np.nan_to_num(X_train_raw)
-  X_val_raw = np.nan_to_num(X_val_raw)
-  X_test_raw = np.nan_to_num(X_test_raw)
-
-  scaler_path = MODELS_DIR / f'{FEATURE_TYPE}_scaler.joblib'
-  joblib.dump(scaler, scaler_path)
-  print(f"Saved fitted StandardScaler to {scaler_path}")
-
-  # --- 7. Decode Labels ---
-  train_orig, y_train_bin, y_train_3c = decode_labels(y_train_raw)
-  val_orig,   y_val_bin,   y_val_3c   = decode_labels(y_val_raw)
-  test_orig,  y_test_bin,  y_test_3c  = decode_labels(y_test_raw)
-
-  test_states_idx = np.array([SS_CLASSES.index(char) for char in test_orig])
-
-  # --- 8. Execution ---
   print(f"\n===================================================================")
   print(f" STARTING EXECUTION PIPELINE FOR WEIGHT STRATEGY: BINARY")
   print(f"===================================================================")
   
-  if 'global_binary' in tasks_to_run:
+  if 'global_binary' in args.tasks:
     tune_and_evaluate(
       X_train_raw, y_train_bin, X_val_raw, y_val_bin, X_test_raw, y_test_bin, 
-      "Global_Binary", train_orig, y_train_raw, val_orig, test_orig, y_test_raw
+      "Global_Binary", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs
     )
   
-  if 'global_3class' in tasks_to_run:
+  if 'global_3class' in args.tasks:
     run_multi_class_suite(
       X_train_raw, y_train_3c, X_val_raw, y_val_3c, X_test_raw, y_test_3c, 
-      "Global_3Class", train_orig, y_train_raw, val_orig, test_orig, y_test_raw
+      "Global_3Class", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs
     )
 
-  if 'input_dep_binary' in tasks_to_run or 'input_dep_3class' in tasks_to_run:
+  if 'input_dep_binary' in args.tasks or 'input_dep_3class' in args.tasks:
     collected_bin_models = {}
     collected_3c_models = {'CommonC_OvO': {}, 'CommonC_OvR': {}}
 
@@ -372,38 +244,38 @@ if __name__ == "__main__":
         print(f"\nSkipping Input-Dependent {state_char} (No training samples)")
         continue
           
-      if 'input_dep_binary' in tasks_to_run:
+      if 'input_dep_binary' in args.tasks:
         bin_mdl = tune_and_evaluate(
           X_train_raw[m_train], y_train_bin[m_train],
           X_val_raw[m_val],     y_val_bin[m_val],
           X_test_raw[m_test],   y_test_bin[m_test],
           f"InputDep_{state_char}_Binary",
-          train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test]
+          train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test], dirs
         )
         collected_bin_models[state_idx] = bin_mdl
       
-      if 'input_dep_3class' in tasks_to_run:
+      if 'input_dep_3class' in args.tasks:
         mc_mdls = run_multi_class_suite(
           X_train_raw[m_train], y_train_3c[m_train], 
           X_val_raw[m_val],     y_val_3c[m_val], 
           X_test_raw[m_test],   y_test_3c[m_test], 
           f"InputDep_{state_char}_3Class",
-          train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test]
+          train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test], dirs
         )
         for variant, variant_models in mc_mdls.items():
           collected_3c_models[variant][state_idx] = variant_models
 
-    if 'input_dep_binary' in tasks_to_run and collected_bin_models:
+    if 'input_dep_binary' in args.tasks and collected_bin_models:
       print("\n--- Constructing Unified Input-Dependent Binary Model ---")
       combined_f1 = StateRoutedCombinedClassifier(collected_bin_models, test_states_idx)
       
       evaluate_and_summarize(
         combined_f1, X_test_raw, y_test_bin, True, [0, 1], 
         "Combined_InputDep_Binary", 
-        test_orig=test_orig, y_test_raw=y_test_raw, force_eval=True
+        test_orig=test_orig, y_test_raw=y_test_raw, dirs=dirs, force_eval=True
       )
 
-    if 'input_dep_3class' in tasks_to_run:
+    if 'input_dep_3class' in args.tasks:
       for variant, state_dict in collected_3c_models.items():
         if state_dict:
           print(f"\n--- Constructing Unified Input-Dependent 3-Class Model ({variant}) ---")
@@ -412,5 +284,5 @@ if __name__ == "__main__":
           evaluate_and_summarize(
             combined_f1, X_test_raw, y_test_3c, False, [0, 1, 2], 
             f"Combined_InputDep_3Class_{variant}", 
-            test_orig=test_orig, y_test_raw=y_test_raw, force_eval=True
+            test_orig=test_orig, y_test_raw=y_test_raw, dirs=dirs, force_eval=True
           )
