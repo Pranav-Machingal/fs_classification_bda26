@@ -1,0 +1,23 @@
+\section{Hyperparameter tuning for SVM}
+\label{apx:sec:param_tuning}
+We optimize the standard SVM parameters ($C$ and $\gamma$), alongside a custom sample-wise weighting parameter, using a simultaneous three-stage, coarse-to-fine search strategy. Rather than evaluating a single massive grid, this approach systematically zeroes in on the optimal parameter space by using the best-performing value from each round as the center point for a narrower, finer search in the subsequent round.
+
+\paragraph{Tuning the standard parameters ($C$ and $\gamma$)}
+Because $C$ and $\gamma$ are highly sensitive to orders of magnitude, we search their space logarithmically. Both parameters independently follow this three-stage refinement:
+\begin{itemize}
+    \item Round 1 (Broad Search): We start with a wide logarithmic grid: $\{10^{-4}, 10^{-2}, 1, 10^2, 10^4\}$.
+    \item Round 2 (First Refinement): Assuming the best value from Round 1 is $10^2$, we define a tighter window bounded by its adjacent values from the first grid ($1$ and $10^4$). We evaluate symmetrically distributed exponents within this window: $\{10^{2/3}, 10^{4/3}, 10^{2}, 10^{8/3}, 10^{10/3}\}$.
+    \item Round 3 (Final Refinement): Assuming the best value is now $10^{4/3}$, we zoom in a final time between its new adjacent bounds ($10^{2/3}$ and $10^2$) with an even finer step size, evaluating: $\{10, 10^{4/3}, 10^{5/3}\}$.
+\end{itemize}
+
+
+\paragraph{Tuning the sample-wise weights}
+To handle class imbalance, we apply a sample-wise weighting strategy to the SVM training. In the dual formulation, the upper bound $C$ on the Lagrange multiplier $\alpha_i$ is reweighed sample-wise to $\alpha_i \le C \times r_i$. We assign distinct weights to the minority (fold-switching) and majority (no-switch) samples using $r_+$ and $r_-$, respectively. These weights are governed by a single structural parameter $a$, defined as:
+$$a = \frac{1}{2r_+} = 1-\frac{1}{2r_-}$$
+If $n_+$ out of $n$ total training samples belong to the minority class, we anchor our search around a theoretical baseline $\Bar{a} = \frac{n_+}{n}$. Because $a$ represents a physical distribution rather than an order of magnitude, we mirror the three-stage tuning process using an equally spaced linear subdivision rather than a logarithmic one, rigorously enforcing $a < 1$ to ensure $r_-$ remains positive:
+\begin{itemize}
+    \item Round 1 (Broad Search): We define an initial linear range centered on $\Bar{a}$ with a step size of $\Bar{a}/4$, yielding: $\{\frac{\Bar{a}}{2}, \frac{3\Bar{a}}{4}, \Bar{a}, \frac{5\Bar{a}}{4}, \frac{3\Bar{a}}{2}\}$.
+    \item Round 2 (First Refinement): Assuming the best $a$ is $\frac{5\Bar{a}}{4}$, we take the adjacent bounds from Round 1 ($\Bar{a}$ and $\frac{3\Bar{a}}{2}$) and subdivide this interval into equally spaced points to generate five new candidates. This yields a narrower search range: $\{\frac{13\Bar{a}}{12}, \frac{7\Bar{a}}{6}, \frac{5\Bar{a}}{4}, \frac{4\Bar{a}}{3}, \frac{17\Bar{a}}{12}\}$.
+    \item Round 3 (Final Refinement): Assuming the best $a$ is now $\frac{7\Bar{a}}{6}$, we take its adjacent bounds from Round 2 ($\frac{13\Bar{a}}{12}$ and $\frac{5\Bar{a}}{4}$) and subdivide that interval again. We evaluate three highly targeted candidates: $\{\frac{9\Bar{a}}{8}, \frac{7\Bar{a}}{6}, \frac{29\Bar{a}}{24}\}$.
+\end{itemize}
+This linearly bounded search space for $a$ is evaluated simultaneously with the logarithmic tuning rounds for $C$ and $\gamma$.
