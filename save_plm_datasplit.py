@@ -7,7 +7,7 @@ import sys
 import argparse
 
 parser = argparse.ArgumentParser(description="Save train/val/test split features")
-parser.add_argument('--feature_type', type=str, default='saprot', choices=['saprot', 'fusionprot', 'protssn'], help="Feature type for creating splits")
+parser.add_argument('--feature_type', type=str, default='saprot', choices=['saprot', 'fusionprot', 'protssn', 'prosst'], help="Feature type for creating splits")
 args = parser.parse_args()
 FEATURE_TYPE = args.feature_type
 

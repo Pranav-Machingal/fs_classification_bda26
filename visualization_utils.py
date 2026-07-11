@@ -15,6 +15,10 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
     base_dir = Path('saved_data/svm_experiments_fusionprot')
   elif feature_type == 'saprot':
     base_dir = Path('saved_data/svm_experiments_saprot')
+  elif feature_type == 'protssn':
+    base_dir = Path('saved_data/svm_experiments_protssn')
+  elif feature_type == 'prosst':
+    base_dir = Path('saved_data/svm_experiments_prosst')
   else:
     base_dir = Path(f'saved_data/svm_experiments_k{k}')
     
@@ -214,7 +218,7 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
   plt.tight_layout(rect=[0, 0, 1, 0.98])
   plt.show()
 
-def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=['fusionprot', 'saprot', 'kndrf'], k_values=[1, 3, 5, 7]):
+def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=['fusionprot', 'saprot', 'protssn', 'prosst', 'kndrf'], k_values=[1, 3, 5, 7]):
   """
   Ranks a predefined list of tasks based on their switch-prediction F1-scores
   across multiple weight strategies and feature types.
@@ -239,6 +243,10 @@ def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=
       base_dirs = [(Path('saved_data/svm_experiments_fusionprot'), 'fusionprot')]
     elif feature_type == 'saprot':
       base_dirs = [(Path('saved_data/svm_experiments_saprot'), 'saprot')]
+    elif feature_type == 'protssn':
+      base_dirs = [(Path('saved_data/svm_experiments_protssn'), 'protssn')]
+    elif feature_type == 'prosst':
+      base_dirs = [(Path('saved_data/svm_experiments_prosst'), 'prosst')]
     else:
       base_dirs = [(Path(f'saved_data/svm_experiments_k{k}'), f'kndrf (k={k})') for k in k_values]
       
