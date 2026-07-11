@@ -10,7 +10,7 @@ labels_df = pd.read_csv('residue_switch_labels.csv')
 train_val_dict = pickle.load(open('train_val_split0.pkl', 'rb'))
 train_ids = train_val_dict['train']
 val_ids = train_val_dict['val']
-d29_features_dict = pickle.load(open('saved_data/feature_extraction/29d_features.pkl', 'rb'))
+d29_features_dict = pickle.load(open('saved_data/feature_extraction/kndrf_29d_features.pkl', 'rb'))
 
 switch_labels = [f'{s1}/{s2}' for s1 in ['a', 'b', 'c'] for s2 in ['a', 'b', 'c']]
 

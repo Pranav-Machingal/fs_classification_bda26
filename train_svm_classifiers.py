@@ -34,8 +34,8 @@ from classifier_utils import (
 
 # --- 1. Parse Command Line Arguments ---
 parser = argparse.ArgumentParser(description="Train cuML SVM classifiers (Unified Pipeline).")
-parser.add_argument('--feature_type', type=str, default='fusionprot', choices=['kndrf', 'fusionprot', 'saprot', 'protssn', 'prosst'], help="Feature set to use for training")
-parser.add_argument('--k', type=int, default=3, help="k value (Used only if feature_type is 'kndrf')")
+parser.add_argument('--feature_type', type=str, default='fusionprot', choices=['kndrf', 'kncsic', 'fusionprot', 'saprot', 'protssn', 'prosst'], help="Feature set to use for training")
+parser.add_argument('--k', type=int, default=3, help="k value (Used only if feature_type is 'kndrf' or 'kncsic')")
 parser.add_argument('--n_jobs', type=int, default=2, help="Number of parallel Optuna trials")
 parser.add_argument('--n_trials', type=int, default=30, help="Total number of hyperparameter combinations to test")
 parser.add_argument('--weight_strategies', nargs='+', default=['all'], choices=['all', 'binary', 'type'], help="Sample weighting strategies to evaluate")
@@ -71,8 +71,12 @@ elif FEATURE_TYPE == 'protssn':
   BASE_DIR = Path('saved_data/svm_experiments_protssn')
 elif FEATURE_TYPE == 'prosst':
   BASE_DIR = Path('saved_data/svm_experiments_prosst')
+elif FEATURE_TYPE == 'kncsic':
+  BASE_DIR = Path(f'saved_data/svm_experiments_k{K_VAL}_ncsic')
+elif FEATURE_TYPE == 'kndrf':
+  BASE_DIR = Path(f'saved_data/svm_experiments_k{K_VAL}_ndrf')
 else:
-  BASE_DIR = Path(f'saved_data/svm_experiments_k{K_VAL}')
+  raise ValueError(f"Unknown feature type: {FEATURE_TYPE}")
 
 MODELS_DIR = BASE_DIR / 'models'
 METRICS_DIR = BASE_DIR / 'metrics'
@@ -310,8 +314,12 @@ if __name__ == "__main__":
     data = np.load('saved_data/feature_extraction/protssn.npz')
   elif FEATURE_TYPE == 'prosst':
     data = np.load('saved_data/feature_extraction/prosst.npz')
-  else:
+  elif FEATURE_TYPE == 'kncsic':
+    data = np.load(f'saved_data/feature_extraction/k{K_VAL}ncsic.npz')
+  elif FEATURE_TYPE == 'kndrf':
     data = np.load(f'saved_data/feature_extraction/k{K_VAL}ndrf.npz') 
+  else:
+    raise ValueError(f"Unknown feature type: {FEATURE_TYPE}")
   
   X_train_raw = np.float32(data['X_train'])
   y_train_raw = data['y_train']

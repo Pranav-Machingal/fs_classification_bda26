@@ -1,0 +1,9 @@
+\subsubsection{kNCSIC feature.}
+
+First, create a contact map $\mathcal{C}$ for a given input structure. The contacts in contact maps can be defined in two ways: if $C\beta$ atoms are less than $8\text{\AA}$, or if $C\alpha$ atoms are less than $7\text{\AA}$. The contacts of residue are then divided into 4 categories based on the sequence separation of the contacts: (1) neighbourhood contacts, 2-5 residues apart; (2) short-range contacts, 6-11 residues apart; (3) mid-range contacts, 12-23 residues apart; and (4) long-range contacts, more than 24 residues apart. For a given sequence position $i$ from a PDB structure, we encode the following from the $(2k+ 1)$-mer centred at the $i^{th}$ residue:
+\begin{itemize}
+    \item We encode the ($2k+1$)-mer by concatenating $2k+1$ one-hot encoded vectors each of 20 dimensions. Resulting in $(2k+1)*20$-dimensional feature vector.
+    \item For each of the $2k+1$ residues, we look at the amino acid composition frequency counts of their contacts at the 4 defined contact separation ranges. This results in a $(2k+1)*4*20$ dimensional vector. 
+    \item For each position, we will also use the secondary structural element (SSE) of the $(2k+1)$-mer, i.e. helix/sheet/chain. This will be a concatenation of $(2k+1)$ one-hot encoded vectors, each being 3-dimensional, resulting in a total of $(2k+1)*3$ dimensions. 
+\end{itemize}
+Thus, overall, we compute a $(2k+1)*103$-dimensional feature vector as described above. 

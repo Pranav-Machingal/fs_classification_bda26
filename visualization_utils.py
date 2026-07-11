@@ -19,8 +19,12 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
     base_dir = Path('saved_data/svm_experiments_protssn')
   elif feature_type == 'prosst':
     base_dir = Path('saved_data/svm_experiments_prosst')
+  elif feature_type == 'kncsic':
+    base_dir = Path(f'saved_data/svm_experiments_k{k}_ncsic')
+  elif feature_type == 'kndrf':
+    base_dir = Path(f'saved_data/svm_experiments_k{k}_ndrf')
   else:
-    base_dir = Path(f'saved_data/svm_experiments_k{k}')
+    raise ValueError(f"Unknown feature type: {feature_type}")
     
   metrics_dir = base_dir / 'metrics'
   tuning_dir = base_dir / 'tuning'
@@ -218,7 +222,7 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
   plt.tight_layout(rect=[0, 0, 1, 0.98])
   plt.show()
 
-def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=['fusionprot', 'saprot', 'protssn', 'prosst', 'kndrf'], k_values=[1, 3, 5, 7]):
+def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=['fusionprot', 'saprot', 'protssn', 'prosst', 'kndrf', 'kncsic'], k_values=[1, 3, 5, 7]):
   """
   Ranks a predefined list of tasks based on their switch-prediction F1-scores
   across multiple weight strategies and feature types.
@@ -247,8 +251,12 @@ def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=
       base_dirs = [(Path('saved_data/svm_experiments_protssn'), 'protssn')]
     elif feature_type == 'prosst':
       base_dirs = [(Path('saved_data/svm_experiments_prosst'), 'prosst')]
+    elif feature_type == 'kncsic':
+      base_dirs = [(Path(f'saved_data/svm_experiments_k{k}_ncsic'), f'kncsic (k={k})') for k in k_values]
+    elif feature_type == 'kndrf':
+      base_dirs = [(Path(f'saved_data/svm_experiments_k{k}_ndrf'), f'kndrf (k={k})') for k in k_values]
     else:
-      base_dirs = [(Path(f'saved_data/svm_experiments_k{k}'), f'kndrf (k={k})') for k in k_values]
+      raise ValueError(f"Unknown feature type: {feature_type}")
       
     for base_dir, feature_label in base_dirs:
       metrics_dir = base_dir / 'metrics'
