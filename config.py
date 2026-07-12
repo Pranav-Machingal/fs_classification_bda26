@@ -9,8 +9,8 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train cuML SVM classifiers (GridSearch Pipeline).")
     parser.add_argument('--feature_type', type=str, default='fusionprot', choices=['kndrf', 'kncsic', 'fusionprot', 'saprot', 'protssn', 'prosst'], help="Feature set to use for training")
     parser.add_argument('--k', type=int, default=3, help="k value (Used only if feature_type is 'kndrf' or 'kncsic')")
-    parser.add_argument('--n_jobs', type=int, default=1, help="Number of parallel processes for GridSearch. Keep low (e.g. 2-4) to avoid GPU OOM.")
-    parser.add_argument('--R', type=int, default=3, help="Number of refinement rounds for GridSearch.")
+    parser.add_argument('--n_trials', type=int, default=80, help="Number of Optuna trials per kernel type.")
+    parser.add_argument('--max_parallel_kernels', type=int, default=4, help="Max kernel processes to run concurrently on the GPU.")
     parser.add_argument('--tasks', nargs='+', default=['all'], 
                         choices=['all', 'global_binary', 'global_3class', 'input_dep_binary', 'input_dep_3class'],
                         help="Which classifier suites to train")

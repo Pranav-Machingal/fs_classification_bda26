@@ -4,14 +4,14 @@ We optimize the standard SVM parameters ($C$ and $\gamma$), alongside a custom s
 
 ### 1. Dynamic Logarithmic Search for Standard Parameters ($C$ and $\gamma$)
 
-Because $C$ and $\gamma$ are highly sensitive to orders of magnitude, we search their space logarithmically. Let $\Delta$ represent the common difference of the exponents. For both $C$ and $\gamma$, we execute the following sequence for a total of 4 iterations:
+Because $C$ and $\gamma$ are highly sensitive to orders of magnitude, we search their space logarithmically. Let $\Delta$ represent the common difference of the exponents. For both $C$ and $\gamma$, we execute the following sequence for a total of 3 iterations:
 
-1. **Initialization:** We define a base exponent step size $\Delta = 2$ and evaluate an initial search space of $\{10^{-2}, 10^0, 10^2\}$.
-2. **Variance Check (Plateau Escape):** We calculate the standard deviation, $\delta$, of the validation scores across the current search space. If the scores are virtually flat ($\delta < 0.01$), the search space is too narrow or poorly positioned. We recursively zoom out by extending the grid with the current $\Delta$ (e.g., expanding to evaluate $10^{-4}$ and $10^4$) until the variance condition $\delta \ge 0.01$ is satisfied.
+1. **Initialization:** Initialization: We define a base exponent step size $\Delta = 1$ and evaluate an initial search space of $\{10^{-1}, 10^0, 10^1\}$.
+2. **Variance Check (Plateau Escape):** We calculate the standard deviation, $\delta$, of the validation scores across the current search space. If the scores are virtually flat ($\delta < 0.01$), the search space is too narrow or poorly positioned. We recursively zoom out by extending the grid with the current $\Delta$ (e.g., expanding to evaluate $10^{-2}$ and $10^2$) until the variance condition $\delta \ge 0.01$ is satisfied. We do this a maximum of three times. 
 3. **Directional Boundary Expansion:** Once $\delta \ge 0.01$, we identify the parameter yielding the highest validation score. If this best-performing value lies at the absolute leftmost or rightmost boundary of the current search space, we continue expanding the grid in that specific direction by steps of $\Delta$ until the validation score ceases to increase.
 4. **Refinement (Zoom-in):** Once the optimal value is bounded (i.e., it is strictly internal, or directional expansion has terminated), we center a new search space around this best value. We update the step size by halving it ($\Delta \leftarrow \Delta/2$) and define the new local neighborhood for the next iteration.
 
-This entire 4-step process is repeated for exactly 4 refinement rounds, systematically zeroing in on the optimal logarithmic value.
+This entire 4-step process is repeated for exactly 3 refinement rounds, systematically zeroing in on the optimal logarithmic value.
 
 ### 2. Dynamic Linear Search for Sample-wise Weights
 
@@ -27,8 +27,8 @@ If $n_+$ out of $n$ total training samples belong to the minority class, we anch
 We apply the exact same 4-round dynamic algorithm used for $C$ and $\gamma$ to optimize $a$, but operate in a **linear space** rather than an exponential one. Let $\Delta_a$ represent the linear step size.
 
 1. We initialize $\Delta_a = \Bar{a}/2$ and evaluate the starting space $\{\Bar{a} - \Delta_a, \Bar{a}, \Bar{a} + \Delta_a\}$ (which corresponds to $\{\Bar{a}/2, \Bar{a}, 3\Bar{a}/2\}$).
-2. If the validation score standard deviation $\delta < 0.01$, we zoom out linearly by steps of $\Delta_a$ until $\delta \ge 0.01$.
+2. If the validation score standard deviation $\delta < 0.01$, we zoom out linearly by steps of $\Delta_a$ until $\delta \ge 0.01$ (max 3 times).
 3. If the best value sits at a boundary, we expand in that direction by $\Delta_a$ until the score stops increasing.
-4. We then center on the best value, halve the linear step size ($\Delta_a \leftarrow \Delta_a/2$), and repeat for 4 rounds.
+4. We then center on the best value, halve the linear step size ($\Delta_a \leftarrow \Delta_a/2$), and repeat for 3 rounds.
 
 Throughout this dynamic search for $a$, we strictly enforce the mathematical boundary $0 < a < 1$ during any expansion phase to guarantee that the majority class weight $r_-$ remains positive and valid.
