@@ -112,7 +112,7 @@ def _evaluate_single_config(params, X_train, y_train, X_val, y_val, y_train_bin_
   params['val_f1'] = val_f1
   return params
 
-def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy=None, n_jobs=1):
+def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy=None, n_jobs=1, R=4):
   summary_path = dirs['metrics'] / f'{task_name}_binary_test_summary.pkl'
   tuning_csv_path = dirs['tuning'] / f'{task_name}_binary_tuning.csv'
   f1_model_path = dirs['models'] / f'{task_name}_binary_best_f1_model.joblib'
@@ -124,7 +124,7 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
     print(f"\n--- Skipping Tuning: {task_name} (Already computed) ---")
     return joblib.load(f1_model_path)
 
-  print(f"\n--- Tuning via 3-Stage GridSearch: {task_name} (n_jobs={n_jobs}) ---")
+  print(f"\n--- Tuning via Dynamic {R}-Stage Search: {task_name} (n_jobs={n_jobs}) ---")
 
   _, y_train_bin_raw, _ = decode_labels(y_train_raw)
   n_plus = np.sum(y_train_bin_raw == 1)
@@ -152,74 +152,134 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
     
     step_c = 2.0
     step_g = 2.0
-    step_a = a_bar / 4.0
+    step_a = a_bar / 2.0
     
-    for r in [1, 2, 3]:
-      c_grid, step_c = get_log_grid(best_c_exp, step_c, r)
-      a_grid_raw, step_a = get_linear_grid(best_a, step_a, r, a_bar)
-      
-      a_grid = np.clip(a_grid_raw, 0.0001, 0.9999)
-      a_grid = np.unique(a_grid)
-      
+    for r in range(1, R + 1):
+      c_grid = [best_c_exp - step_c, best_c_exp, best_c_exp + step_c]
       if config['kernel'] in ['rbf', 'poly']:
-        g_grid, step_g = get_log_grid(best_g_exp, step_g, r)
+        g_grid = [best_g_exp - step_g, best_g_exp, best_g_exp + step_g]
       else:
         g_grid = [None]
         
-      all_params_to_eval = []
+      a_grid_raw = [best_a - step_a, best_a, best_a + step_a]
+      a_grid = [a for a in a_grid_raw if 0 < a < 1]
       
-      for c_exp in c_grid:
-        for g_exp in g_grid:
-          for a_val in a_grid:
-            params = config.copy()
-            params['C'] = 10 ** c_exp
-            params['c_exp'] = c_exp
-            params['a'] = a_val
-            params['round'] = r
-            if g_exp is not None:
-              params['gamma'] = 10 ** g_exp
-              params['g_exp'] = g_exp
-              
-            # Create a unique, hashable signature for this hyperparameter combo
-            # 'round' is intentionally left out so identical configs are recognized across rounds
-            sig = (params['kernel'], params.get('degree', -1), round(c_exp, 5), round(g_exp if g_exp is not None else 0, 5), round(a_val, 6))
-            
-            if sig not in evaluated_configs:
-              params['sig'] = sig
-              all_params_to_eval.append(params)
-              
-      # Execute the grid manually via joblib loky backend for context isolation (only for unseen configs)
-      if all_params_to_eval:
-        results = Parallel(n_jobs=n_jobs, backend='loky')(
-          delayed(_evaluate_single_config)(
-            p, X_train, y_train, X_val, y_val, y_train_bin_raw, train_orig, val_orig, is_binary, multi_strategy
-          ) for p in all_params_to_eval
-        )
-        
-        for res_params in results:
-          sig = res_params.pop('sig')
-          evaluated_configs[sig] = res_params
-          history.append(res_params)
-          
-      # Determine the best config FOR THIS ROUND from the cache
+      expansions = 0
+      max_expansions = 10
       best_r_val_f1 = -1
       best_r_params = None
       
-      for c_exp in c_grid:
-        for g_exp in g_grid:
-          for a_val in a_grid:
-            sig = (config['kernel'], config.get('degree', -1), round(c_exp, 5), round(g_exp if g_exp is not None else 0, 5), round(a_val, 6))
-            res_params = evaluated_configs[sig]
-            
-            if res_params['val_f1'] > best_r_val_f1:
-              best_r_val_f1 = res_params['val_f1']
-              best_r_params = res_params
+      while expansions < max_expansions:
+        all_params_to_eval = []
+        all_params_in_grid = []
+        
+        for c_exp in c_grid:
+          for g_exp in g_grid:
+            for a_val in a_grid:
+              params = config.copy()
+              params['C'] = 10 ** c_exp
+              params['c_exp'] = c_exp
+              params['a'] = a_val
+              params['round'] = r
+              if g_exp is not None:
+                params['gamma'] = 10 ** g_exp
+                params['g_exp'] = g_exp
+                
+              sig = (params['kernel'], params.get('degree', -1), round(c_exp, 5), round(g_exp if g_exp is not None else 0, 5), round(a_val, 6))
+              params['sig'] = sig
+              all_params_in_grid.append(params)
               
+              if sig not in evaluated_configs:
+                all_params_to_eval.append(params)
+                
+        # Execute the grid manually via joblib loky backend for context isolation (only for unseen configs)
+        if all_params_to_eval:
+          results = Parallel(n_jobs=n_jobs, backend='loky')(
+            delayed(_evaluate_single_config)(
+              p, X_train, y_train, X_val, y_val, y_train_bin_raw, train_orig, val_orig, is_binary, multi_strategy
+            ) for p in all_params_to_eval
+          )
+          
+          for res_params in results:
+            sig = res_params.pop('sig')
+            evaluated_configs[sig] = res_params
+            history.append(res_params)
+            
+        # Get scores for the current grid
+        scores = [evaluated_configs[p['sig']]['val_f1'] for p in all_params_in_grid]
+        std_dev = np.std(scores) if len(scores) > 1 else 0.0
+        
+        # Find best in current grid
+        best_p = max(all_params_in_grid, key=lambda p: evaluated_configs[p['sig']]['val_f1'])
+        best_r_val_f1 = evaluated_configs[best_p['sig']]['val_f1']
+        best_r_params = evaluated_configs[best_p['sig']]
+        
+        expanded = False
+        
+        # Condition 2: Plateau Escape
+        if std_dev < 0.01:
+          min_c = min(c_grid)
+          max_c = max(c_grid)
+          c_grid.extend([min_c - step_c, max_c + step_c])
+          
+          if config['kernel'] in ['rbf', 'poly']:
+            min_g = min(g_grid)
+            max_g = max(g_grid)
+            g_grid.extend([min_g - step_g, max_g + step_g])
+            
+          min_a = min(a_grid)
+          max_a = max(a_grid)
+          if min_a - step_a > 0: a_grid.append(min_a - step_a)
+          if max_a + step_a < 1: a_grid.append(max_a + step_a)
+          
+          expanded = True
+        else:
+          # Condition 3: Directional Boundary Expansion
+          best_c = best_p['c_exp']
+          best_g = best_p.get('g_exp', None)
+          best_a_val = best_p['a']
+          
+          if best_c == min(c_grid):
+            c_grid.append(best_c - step_c)
+            expanded = True
+          elif best_c == max(c_grid):
+            c_grid.append(best_c + step_c)
+            expanded = True
+            
+          if config['kernel'] in ['rbf', 'poly']:
+            if best_g == min(g_grid):
+              g_grid.append(best_g - step_g)
+              expanded = True
+            elif best_g == max(g_grid):
+              g_grid.append(best_g + step_g)
+              expanded = True
+              
+          if best_a_val == min(a_grid) and best_a_val - step_a > 0:
+            a_grid.append(best_a_val - step_a)
+            expanded = True
+          elif best_a_val == max(a_grid) and best_a_val + step_a < 1:
+            a_grid.append(best_a_val + step_a)
+            expanded = True
+            
+        if expanded:
+          c_grid = sorted(list(set(c_grid)))
+          if g_grid[0] is not None: g_grid = sorted(list(set(g_grid)))
+          a_grid = sorted(list(set(a_grid)))
+          expansions += 1
+        else:
+          # Strictly internal best point, and variance is good. Round complete.
+          break
+          
       if best_r_params is not None:
         best_c_exp = best_r_params['c_exp']
         best_a = best_r_params['a']
         if 'g_exp' in best_r_params:
           best_g_exp = best_r_params['g_exp']
+          
+      # Refine step sizes for next round
+      step_c /= 2.0
+      step_g /= 2.0
+      step_a /= 2.0
           
     if best_global_params is None or best_r_val_f1 > best_global_val_f1:
       best_global_val_f1 = best_r_val_f1
@@ -238,10 +298,10 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
   
   return best_model
 
-def run_multi_class_suite(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, base_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, n_jobs=1):
+def run_multi_class_suite(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, base_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, n_jobs=1, R=4):
   mdls = {}
-  mdls['CommonC_OvO'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvO", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovo', n_jobs=n_jobs)
-  mdls['CommonC_OvR'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvR", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovr', n_jobs=n_jobs)
+  mdls['CommonC_OvO'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvO", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovo', n_jobs=n_jobs, R=R)
+  mdls['CommonC_OvR'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvR", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovr', n_jobs=n_jobs, R=R)
   return mdls
 
 if __name__ == "__main__":
@@ -262,14 +322,14 @@ if __name__ == "__main__":
     tune_and_evaluate(
       X_train_raw, y_train_bin, X_val_raw, y_val_bin, X_test_raw, y_test_bin, 
       "Global_Binary", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs,
-      n_jobs=args.n_jobs
+      n_jobs=args.n_jobs, R=args.R
     )
   
   if 'global_3class' in args.tasks:
     run_multi_class_suite(
       X_train_raw, y_train_3c, X_val_raw, y_val_3c, X_test_raw, y_test_3c, 
       "Global_3Class", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs,
-      n_jobs=args.n_jobs
+      n_jobs=args.n_jobs, R=args.R
     )
 
   if 'input_dep_binary' in args.tasks or 'input_dep_3class' in args.tasks:
@@ -292,7 +352,7 @@ if __name__ == "__main__":
           X_test_raw[m_test],   y_test_bin[m_test],
           f"InputDep_{state_char}_Binary",
           train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test], dirs,
-          n_jobs=args.n_jobs
+          n_jobs=args.n_jobs, R=args.R
         )
         collected_bin_models[state_idx] = bin_mdl
       
@@ -303,7 +363,7 @@ if __name__ == "__main__":
           X_test_raw[m_test],   y_test_3c[m_test], 
           f"InputDep_{state_char}_3Class",
           train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test], dirs,
-          n_jobs=args.n_jobs
+          n_jobs=args.n_jobs, R=args.R
         )
         for variant, variant_models in mc_mdls.items():
           collected_3c_models[variant][state_idx] = variant_models
