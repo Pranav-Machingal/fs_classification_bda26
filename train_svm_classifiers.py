@@ -80,7 +80,7 @@ def _get_cuml_model_for_tuning(params, multi_strategy):
   else:
     return base_svm
 
-def worker_fit_and_score(params, multi_strategy, is_binary, r_plus, r_minus, return_dict):
+def worker_fit_and_score(params, multi_strategy, is_binary, r_plus, r_minus, child_conn):
     try:
         sample_weights = np.where(G_Y_TRAIN_BIN_RAW == 1, r_plus, r_minus)
         model = _get_cuml_model_for_tuning(params, multi_strategy)
@@ -98,10 +98,14 @@ def worker_fit_and_score(params, multi_strategy, is_binary, r_plus, r_minus, ret
         train_f1 = compute_switch_f1(G_Y_TRAIN, y_train_pred, G_TRAIN_ORIG, is_binary)
         val_f1 = compute_switch_f1(G_Y_VAL, y_val_pred, G_VAL_ORIG, is_binary)
         
-        return_dict['train_f1'] = float(train_f1)
-        return_dict['val_f1'] = float(val_f1)
+        child_conn.send({
+            'train_f1': float(train_f1),
+            'val_f1': float(val_f1)
+        })
     except Exception as e:
-        return_dict['error'] = str(e)
+        child_conn.send({'error': str(e)})
+    finally:
+        child_conn.close()
 
 def objective(trial, kernel, fixed_degree, multi_strategy, is_binary):
     C = trial.suggest_float("C", 1e-6, 1e3, log=True)
@@ -121,13 +125,22 @@ def objective(trial, kernel, fixed_degree, multi_strategy, is_binary):
     r_plus = 1.0 / (2.0 * a)
     r_minus = 1.0 / (2.0 * (1.0 - a))
     
-    manager = mp.Manager()
-    return_dict = manager.dict()
+    parent_conn, child_conn = mp.Pipe()
     
     ctx = mp.get_context('fork')
-    p = ctx.Process(target=worker_fit_and_score, args=(params, multi_strategy, is_binary, r_plus, r_minus, return_dict))
+    p = ctx.Process(target=worker_fit_and_score, args=(params, multi_strategy, is_binary, r_plus, r_minus, child_conn))
     p.start()
+    
+    child_conn.close() # Close in parent to prevent fd leak
+    
     p.join()
+    
+    if parent_conn.poll():
+        return_dict = parent_conn.recv()
+    else:
+        return_dict = {'error': 'Process crashed or died out of memory.'}
+        
+    parent_conn.close()
     
     if 'error' in return_dict:
         label = f"{kernel}(d={fixed_degree})" if fixed_degree else kernel
