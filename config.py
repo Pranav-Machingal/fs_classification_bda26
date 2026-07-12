@@ -9,6 +9,7 @@ def get_args():
     parser = argparse.ArgumentParser(description="Train cuML SVM classifiers (GridSearch Pipeline).")
     parser.add_argument('--feature_type', type=str, default='fusionprot', choices=['kndrf', 'kncsic', 'fusionprot', 'saprot', 'protssn', 'prosst'], help="Feature set to use for training")
     parser.add_argument('--k', type=int, default=3, help="k value (Used only if feature_type is 'kndrf' or 'kncsic')")
+    parser.add_argument('--n_jobs', type=int, default=1, help="Number of parallel processes for GridSearch. Keep low (e.g. 2-4) to avoid GPU OOM.")
     parser.add_argument('--tasks', nargs='+', default=['all'], 
                         choices=['all', 'global_binary', 'global_3class', 'input_dep_binary', 'input_dep_3class'],
                         help="Which classifier suites to train")
@@ -21,17 +22,17 @@ def get_args():
 
 def setup_directories(feature_type, k_val):
     if feature_type == 'fusionprot':
-        base_dir = Path('saved_data/svm_experiments_fusionprot')
+        base_dir = Path('saved_data/svm_experiments/fusionprot')
     elif feature_type == 'saprot':
-        base_dir = Path('saved_data/svm_experiments_saprot')
+        base_dir = Path('saved_data/svm_experiments/saprot')
     elif feature_type == 'protssn':
-        base_dir = Path('saved_data/svm_experiments_protssn')
+        base_dir = Path('saved_data/svm_experiments/protssn')
     elif feature_type == 'prosst':
-        base_dir = Path('saved_data/svm_experiments_prosst')
+        base_dir = Path('saved_data/svm_experiments/prosst')
     elif feature_type == 'kncsic':
-        base_dir = Path(f'saved_data/svm_experiments_k{k_val}_ncsic')
+        base_dir = Path(f'saved_data/svm_experiments/kncsic/k_{k_val}')
     elif feature_type == 'kndrf':
-        base_dir = Path(f'saved_data/svm_experiments_k{k_val}_ndrf')
+        base_dir = Path(f'saved_data/svm_experiments/kndrf/k_{k_val}')
     else:
         raise ValueError(f"Unknown feature type: {feature_type}")
 

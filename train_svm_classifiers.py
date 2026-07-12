@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import joblib
+from joblib import Parallel, delayed
 
 import sklearn
 sklearn.set_config(enable_metadata_routing=True)
@@ -53,7 +54,65 @@ def evaluate_and_summarize(best_model, X_test, y_test, is_binary, classes, task_
   with open(summary_path, 'wb') as f:
     pickle.dump(summary, f)
 
-def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy=None):
+def _build_model(params, multi_strategy):
+  import sklearn
+  sklearn.set_config(enable_metadata_routing=True)
+  from cuml.svm import SVC, LinearSVC
+  from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
+  from sklearn.calibration import CalibratedClassifierCV
+  
+  if params['kernel'] == 'linear':
+    base_svm = LinearSVC(C=params['C'], max_iter=10000) 
+  else:
+    base_svm = SVC(
+      C=params['C'], 
+      kernel=params['kernel'], 
+      degree=params.get('degree', 3), 
+      gamma=params['gamma'],
+      random_state=42,
+      max_iter=10000,
+      cache_size=2048
+    )
+  base_svm = CalibratedClassifierCV(estimator=base_svm, ensemble=False)
+  if hasattr(base_svm, 'set_fit_request'):
+    base_svm.set_fit_request(sample_weight=True)
+  
+  if multi_strategy == 'ovo':
+    wrapper = OneVsOneClassifier(base_svm, n_jobs=1)
+    if hasattr(wrapper, 'set_fit_request'):
+      wrapper.set_fit_request(sample_weight=True)
+    return wrapper
+  elif multi_strategy == 'ovr':
+    wrapper = OneVsRestClassifier(base_svm, n_jobs=1)
+    if hasattr(wrapper, 'set_fit_request'):
+      wrapper.set_fit_request(sample_weight=True)
+    return wrapper
+  else:
+    return base_svm
+
+def _evaluate_single_config(params, X_train, y_train, X_val, y_val, y_train_bin_raw, train_orig, val_orig, is_binary, multi_strategy):
+  from metrics import compute_switch_f1
+  from tuning_utils import get_weights
+  
+  model = _build_model(params, multi_strategy)
+  sample_weights = get_weights(y_train_bin_raw, params['a'])
+  
+  try:
+    model.fit(X_train, y_train, sample_weight=sample_weights)
+    y_train_pred = model.predict(X_train)
+    y_val_pred = model.predict(X_val)
+    train_f1 = compute_switch_f1(y_train, y_train_pred, train_orig, is_binary)
+    val_f1 = compute_switch_f1(y_val, y_val_pred, val_orig, is_binary)
+  except Exception as e:
+    train_f1 = 0.0
+    val_f1 = 0.0
+    print(f"Warning: model fit failed for params {params}: {e}")
+    
+  params['train_f1'] = train_f1
+  params['val_f1'] = val_f1
+  return params
+
+def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy=None, n_jobs=1):
   summary_path = dirs['metrics'] / f'{task_name}_binary_test_summary.pkl'
   tuning_csv_path = dirs['tuning'] / f'{task_name}_binary_tuning.csv'
   f1_model_path = dirs['models'] / f'{task_name}_binary_best_f1_model.joblib'
@@ -65,39 +124,7 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
     print(f"\n--- Skipping Tuning: {task_name} (Already computed) ---")
     return joblib.load(f1_model_path)
 
-  print(f"\n--- Tuning via 3-Stage GridSearch: {task_name} ---")
-  
-  def _build_model(params):
-    import sklearn
-    sklearn.set_config(enable_metadata_routing=True)
-    if params['kernel'] == 'linear':
-      base_svm = LinearSVC(C=params['C'], max_iter=10000) 
-    else:
-      base_svm = SVC(
-        C=params['C'], 
-        kernel=params['kernel'], 
-        degree=params.get('degree', 3), 
-        gamma=params['gamma'],
-        random_state=42,
-        max_iter=10000,
-        cache_size=2048
-      )
-    base_svm = CalibratedClassifierCV(estimator=base_svm, ensemble=False)
-    if hasattr(base_svm, 'set_fit_request'):
-      base_svm.set_fit_request(sample_weight=True)
-    
-    if multi_strategy == 'ovo':
-      wrapper = OneVsOneClassifier(base_svm, n_jobs=1)
-      if hasattr(wrapper, 'set_fit_request'):
-        wrapper.set_fit_request(sample_weight=True)
-      return wrapper
-    elif multi_strategy == 'ovr':
-      wrapper = OneVsRestClassifier(base_svm, n_jobs=1)
-      if hasattr(wrapper, 'set_fit_request'):
-        wrapper.set_fit_request(sample_weight=True)
-      return wrapper
-    else:
-      return base_svm
+  print(f"\n--- Tuning via 3-Stage GridSearch: {task_name} (n_jobs={n_jobs}) ---")
 
   _, y_train_bin_raw, _ = decode_labels(y_train_raw)
   n_plus = np.sum(y_train_bin_raw == 1)
@@ -115,6 +142,8 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
   history = []
   best_global_val_f1 = -1
   best_global_params = None
+  
+  evaluated_configs = {} # Cache to prevent redundant recomputations
 
   for config in configs:
     best_c_exp = 0.0
@@ -137,8 +166,7 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
       else:
         g_grid = [None]
         
-      best_r_val_f1 = -1
-      best_r_params = None
+      all_params_to_eval = []
       
       for c_exp in c_grid:
         for g_exp in g_grid:
@@ -152,29 +180,40 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
               params['gamma'] = 10 ** g_exp
               params['g_exp'] = g_exp
               
-            model = _build_model(params)
-            sample_weights = get_weights(y_train_bin_raw, a_val)
+            # Create a unique, hashable signature for this hyperparameter combo
+            # 'round' is intentionally left out so identical configs are recognized across rounds
+            sig = (params['kernel'], params.get('degree', -1), round(c_exp, 5), round(g_exp if g_exp is not None else 0, 5), round(a_val, 6))
             
-            try:
-              model.fit(X_train, y_train, sample_weight=sample_weights)
+            if sig not in evaluated_configs:
+              params['sig'] = sig
+              all_params_to_eval.append(params)
               
-              y_train_pred = model.predict(X_train)
-              y_val_pred = model.predict(X_val)
-              
-              train_f1 = compute_switch_f1(y_train, y_train_pred, train_orig, is_binary)
-              val_f1 = compute_switch_f1(y_val, y_val_pred, val_orig, is_binary)
-            except Exception as e:
-              train_f1 = 0.0
-              val_f1 = 0.0
-              print(f"Warning: model fit failed for params {params}: {e}")
-              
-            params['train_f1'] = train_f1
-            params['val_f1'] = val_f1
-            history.append(params)
+      # Execute the grid manually via joblib loky backend for context isolation (only for unseen configs)
+      if all_params_to_eval:
+        results = Parallel(n_jobs=n_jobs, backend='loky')(
+          delayed(_evaluate_single_config)(
+            p, X_train, y_train, X_val, y_val, y_train_bin_raw, train_orig, val_orig, is_binary, multi_strategy
+          ) for p in all_params_to_eval
+        )
+        
+        for res_params in results:
+          sig = res_params.pop('sig')
+          evaluated_configs[sig] = res_params
+          history.append(res_params)
+          
+      # Determine the best config FOR THIS ROUND from the cache
+      best_r_val_f1 = -1
+      best_r_params = None
+      
+      for c_exp in c_grid:
+        for g_exp in g_grid:
+          for a_val in a_grid:
+            sig = (config['kernel'], config.get('degree', -1), round(c_exp, 5), round(g_exp if g_exp is not None else 0, 5), round(a_val, 6))
+            res_params = evaluated_configs[sig]
             
-            if val_f1 > best_r_val_f1:
-              best_r_val_f1 = val_f1
-              best_r_params = params
+            if res_params['val_f1'] > best_r_val_f1:
+              best_r_val_f1 = res_params['val_f1']
+              best_r_params = res_params
               
       if best_r_params is not None:
         best_c_exp = best_r_params['c_exp']
@@ -191,7 +230,7 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
   df = pd.DataFrame(history)
   df.to_csv(tuning_csv_path, index=False)
   
-  best_model = _build_model(best_global_params)
+  best_model = _build_model(best_global_params, multi_strategy)
   sample_weights = get_weights(y_train_bin_raw, best_global_params['a'])
   best_model.fit(X_train, y_train, sample_weight=sample_weights)
   
@@ -199,10 +238,10 @@ def tune_and_evaluate(X_train, y_train, X_val, y_val, X_test, y_test, task_name,
   
   return best_model
 
-def run_multi_class_suite(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, base_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs):
+def run_multi_class_suite(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, base_name, train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, n_jobs=1):
   mdls = {}
-  mdls['CommonC_OvO'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvO", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovo')
-  mdls['CommonC_OvR'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvR", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovr')
+  mdls['CommonC_OvO'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvO", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovo', n_jobs=n_jobs)
+  mdls['CommonC_OvR'] = tune_and_evaluate(X_train, y_train_3c, X_val, y_val_3c, X_test, y_test_3c, f"{base_name}_CommonC_OvR", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs, multi_strategy='ovr', n_jobs=n_jobs)
   return mdls
 
 if __name__ == "__main__":
@@ -222,13 +261,15 @@ if __name__ == "__main__":
   if 'global_binary' in args.tasks:
     tune_and_evaluate(
       X_train_raw, y_train_bin, X_val_raw, y_val_bin, X_test_raw, y_test_bin, 
-      "Global_Binary", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs
+      "Global_Binary", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs,
+      n_jobs=args.n_jobs
     )
   
   if 'global_3class' in args.tasks:
     run_multi_class_suite(
       X_train_raw, y_train_3c, X_val_raw, y_val_3c, X_test_raw, y_test_3c, 
-      "Global_3Class", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs
+      "Global_3Class", train_orig, y_train_raw, val_orig, test_orig, y_test_raw, dirs,
+      n_jobs=args.n_jobs
     )
 
   if 'input_dep_binary' in args.tasks or 'input_dep_3class' in args.tasks:
@@ -250,7 +291,8 @@ if __name__ == "__main__":
           X_val_raw[m_val],     y_val_bin[m_val],
           X_test_raw[m_test],   y_test_bin[m_test],
           f"InputDep_{state_char}_Binary",
-          train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test], dirs
+          train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test], dirs,
+          n_jobs=args.n_jobs
         )
         collected_bin_models[state_idx] = bin_mdl
       
@@ -260,7 +302,8 @@ if __name__ == "__main__":
           X_val_raw[m_val],     y_val_3c[m_val], 
           X_test_raw[m_test],   y_test_3c[m_test], 
           f"InputDep_{state_char}_3Class",
-          train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test], dirs
+          train_orig[m_train], y_train_raw[m_train], val_orig[m_val], test_orig[m_test], y_test_raw[m_test], dirs,
+          n_jobs=args.n_jobs
         )
         for variant, variant_models in mc_mdls.items():
           collected_3c_models[variant][state_idx] = variant_models

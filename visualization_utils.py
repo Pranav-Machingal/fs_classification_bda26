@@ -12,17 +12,17 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
   """
   # 1. Path Resolution
   if feature_type == 'fusionprot':
-    base_dir = Path('saved_data/svm_experiments_fusionprot')
+    base_dir = Path('saved_data/svm_experiments/fusionprot')
   elif feature_type == 'saprot':
-    base_dir = Path('saved_data/svm_experiments_saprot')
+    base_dir = Path('saved_data/svm_experiments/saprot')
   elif feature_type == 'protssn':
-    base_dir = Path('saved_data/svm_experiments_protssn')
+    base_dir = Path('saved_data/svm_experiments/protssn')
   elif feature_type == 'prosst':
-    base_dir = Path('saved_data/svm_experiments_prosst')
+    base_dir = Path('saved_data/svm_experiments/prosst')
   elif feature_type == 'kncsic':
-    base_dir = Path(f'saved_data/svm_experiments_k{k}_ncsic')
+    base_dir = Path(f'saved_data/svm_experiments/kncsic/k_{k}')
   elif feature_type == 'kndrf':
-    base_dir = Path(f'saved_data/svm_experiments_k{k}_ndrf')
+    base_dir = Path(f'saved_data/svm_experiments/kndrf/k_{k}')
   else:
     raise ValueError(f"Unknown feature type: {feature_type}")
     
@@ -244,17 +244,17 @@ def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=
   
   for feature_type in feature_types:
     if feature_type == 'fusionprot':
-      base_dirs = [(Path('saved_data/svm_experiments_fusionprot'), 'fusionprot')]
+      base_dirs = [(Path('saved_data/svm_experiments/fusionprot'), 'fusionprot')]
     elif feature_type == 'saprot':
-      base_dirs = [(Path('saved_data/svm_experiments_saprot'), 'saprot')]
+      base_dirs = [(Path('saved_data/svm_experiments/saprot'), 'saprot')]
     elif feature_type == 'protssn':
-      base_dirs = [(Path('saved_data/svm_experiments_protssn'), 'protssn')]
+      base_dirs = [(Path('saved_data/svm_experiments/protssn'), 'protssn')]
     elif feature_type == 'prosst':
-      base_dirs = [(Path('saved_data/svm_experiments_prosst'), 'prosst')]
+      base_dirs = [(Path('saved_data/svm_experiments/prosst'), 'prosst')]
     elif feature_type == 'kncsic':
-      base_dirs = [(Path(f'saved_data/svm_experiments_k{k}_ncsic'), f'kncsic (k={k})') for k in k_values]
+      base_dirs = [(Path(f'saved_data/svm_experiments/kncsic/k_{k}'), f'kncsic (k={k})') for k in k_values]
     elif feature_type == 'kndrf':
-      base_dirs = [(Path(f'saved_data/svm_experiments_k{k}_ndrf'), f'kndrf (k={k})') for k in k_values]
+      base_dirs = [(Path(f'saved_data/svm_experiments/kndrf/k_{k}'), f'kndrf (k={k})') for k in k_values]
     else:
       raise ValueError(f"Unknown feature type: {feature_type}")
       
