@@ -1,3 +1,17 @@
+"""
+SVM Classifier Training and Tuning Module
+
+This module implements the training, hyperparameter optimization, and evaluation of Support Vector Machine (SVM) 
+models for fold-switch prediction. It supports both Binary and Multi-class (Granular) paradigms, as well as 
+Global (Input-Agnostic) and Input-Dependent routing architectures. 
+
+Hyperparameter tuning is powered by Optuna using the Tree-structured Parzen Estimator (TPE) algorithm. 
+The tuning explicitly optimizes regularisation (C), kernel-specific parameters (gamma, degree, coef0), 
+and a continuous class-imbalance weight parameter (a).
+
+To bypass cuML's memory limitations (where multiple fit calls cause GPU context starvation), the Optuna objective
+offloads model training and scoring to isolated child processes using `multiprocessing` with the 'fork' context.
+"""
 import sys
 import numpy as np
 import pandas as pd
@@ -23,6 +37,10 @@ from models import StateRoutedCombinedClassifier
 
 from sklearn.base import BaseEstimator, ClassifierMixin
 
+# --- CuML Scikit-Learn Wrapper ---
+# This wrapper enables compatibility between cuML SVM models and scikit-learn ensemble/multiclass wrappers
+# by explicitly intercepting `predict_proba` and `decision_function` property calls, and explicitly
+# propagating sample weights during fit.
 class CuMLWrapper(BaseEstimator, ClassifierMixin):
   def __init__(self, estimator=None):
     self.estimator = estimator
@@ -90,6 +108,10 @@ G_Y_TRAIN_BIN_RAW = None
 
 
 def _get_cuml_model_for_tuning(params, multi_strategy):
+  """
+  Constructs the base cuML SVM and conditionally wraps it in OneVsOne or OneVsRest classifiers
+  if a multi-class strategy is specified.
+  """
   if params['kernel'] == 'linear':
     base_svm = LinearSVC(C=params['C'], max_iter=10000)
   else:
@@ -117,6 +139,11 @@ def _get_cuml_model_for_tuning(params, multi_strategy):
 
 def worker_fit_and_score(params, multi_strategy, is_binary, r_plus, r_minus,
                          child_conn):
+  """
+  Isolated worker function executed in a dedicated forked process.
+  Trains the SVM model on the global training arrays and computes the validation Switch-F1 score.
+  Prevents cuML GPU context memory leaks during exhaustive Optuna tuning.
+  """
   try:
     import sklearn
     sklearn.set_config(enable_metadata_routing=True)
@@ -149,6 +176,10 @@ def worker_fit_and_score(params, multi_strategy, is_binary, r_plus, r_minus,
 
 
 def objective(trial, kernel, fixed_degree, multi_strategy, is_binary):
+  """
+  Optuna objective function for tuning SVM hyperparameters.
+  Samples C, gamma, coef0, and class weight parameter (a) from continuous probabilistic distributions.
+  """
   C = trial.suggest_float("C", 1e-6, 1e3, log=True)
   params = {'kernel': kernel, 'C': C}
 
@@ -326,6 +357,8 @@ def _fit_and_eval_worker(best_params, multi_strategy, X_train, y_train, sample_w
   best_model.fit(X_train, y_train, sample_weight=sample_weights)
   joblib.dump(best_model, f1_model_path)
   evaluate_and_summarize(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs, force_eval=True)
+
+# --- Main Tuning and Evaluation Pipeline ---
 
 def tune_and_evaluate(X_train,
                       y_train,
@@ -565,7 +598,7 @@ if __name__ == "__main__":
                                     y_test_bin[m_test],
                                     f"InputDep_{state_char}_Binary",
                                     train_orig[m_train],
-                                    y_train_raw[m_train],
+                                    y_train_bin[m_train],
                                     val_orig[m_val],
                                     test_orig[m_test],
                                     y_test_raw[m_test],
@@ -584,7 +617,7 @@ if __name__ == "__main__":
             y_test_3c[m_test],
             f"InputDep_{state_char}_3Class",
             train_orig[m_train],
-            y_train_raw[m_train],
+            y_train_bin[m_train],
             val_orig[m_val],
             test_orig[m_test],
             y_test_raw[m_test],

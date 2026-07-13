@@ -1,0 +1,16 @@
+\section{Problem formulation}
+\label{sec:problem}
+The identification of metamorphic regions is formulated as a position-wise / residue-level classification task. Given an input protein structure, we aim to predict, for each of its residues, whether its secondary structure will change in an alternate conformation or not. If $\mathcal{S}$ is an input protein structure, then we want a feature engineering $\mathcal{F}$ to get a fixed-dimensional feature vector $x_i$ for the residues at sequence position $i$ of the structure, $x_i:= \mathcal{F}(\mathcal{S}, i)$. Then we want a classifier $h: x_i \mapsto y_i $ that predicts the structural switching at position $i$. For this, we look at two predictive paradigms,
+
+\begin{itemize}
+    \item \textbf{Binary fold-switch prediction}: A binary classification task where the objective is to learn a mapping $h_{bin}: x_i \mapsto y_i \in \{0, 1\}$, where $y_i = 1$ if a residue undergoes a secondary structure transition and otherwise, $y_i = 0$.
+    \item \textbf{Granular (multi-class) transition prediction}: A multi-class formulation aimed at predicting the exact target secondary structure state in the alternate conformation. The objective is to learn a mapping $h_{multi}: x_i  \mapsto y_i \in \{\alpha, \beta, c\}$. This allows for the prediction of specific transition subtypes (e.g., $\alpha \rightarrow \beta$,  $c \rightarrow \alpha$).
+\end{itemize}
+
+This classification problem is highly imbalanced, as the number of fold-switching positions in a metamorphic protein is typically a smaller fraction of the protein's total length.
+
+\subsection{Classifier design}
+\label{sec:classifiers}
+For each of the feature engineering described in \cref{sec:features}, we train Support Vector Machine (SVM) classifiers to predict whether a given position in a protein structure switches fold or not. We evaluate linear, polynomial (degrees 2 and 3), and radial basis function (RBF) kernels. The classifiers are trained by minimising a weighted hinge loss. The validation set is used to tune the SVM regularisation parameter $C$ and kernel-specific parameters. The best parameter is tuned based on the F1-score on the validation set, calculated from the precision and recall of the switch class. The classification performance is also evaluated using this F1-score on the test set.
+
+As formalised in \cref{sec:problem}, we train both binary (switch vs. no-switch) and multi-class transition classifiers (utilising both One-vs-One and One-vs-Rest strategies). Furthermore, we evaluate both input-agnostic and input-dependent routing architectures. In the input-agnostic approach, a single, global SVM evaluates all residues. In the input-dependent approach, a routing mechanism assigns residues to one of three specialised SVMs trained exclusively on feature vectors from positions having the same secondary-structure type ($\alpha$-helix, $\beta$-sheet, or coil). Consequently, the model dynamically applies the most appropriate classifier based on the input residue's secondary structure.

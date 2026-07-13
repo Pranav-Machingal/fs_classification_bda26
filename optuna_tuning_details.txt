@@ -8,13 +8,11 @@ Instead of manually defining expanding grids, we define bounded probabilistic se
 
 1. **Standard SVM Parameters ($C$ and $\gamma$):**
    Because $C$ and $\gamma$ are highly sensitive to orders of magnitude, we sample them from a logarithmic continuous distribution.
-   - $C \sim \text{LogUniform}(10^{-6}, 10^{6})$
-   - $\gamma \sim \text{LogUniform}(10^{-6}, 10^{6})$ (only applicable for 'rbf' and 'poly' kernels)
+   - $C \sim \text{LogUniform}(10^{-6}, 10^{3})$
+   - $\gamma \sim \text{LogUniform}(10^{-6}, 10^{2})$ for RBF and $\gamma \sim \text{LogUniform}(10^{-6}, 10^{-1})$ for polynomial kernels. 
 
 2. **Kernel Selection:**
-   The kernel type is treated as a categorical hyperparameter.
-   - $\text{kernel} \in \{\text{'linear'}, \text{'rbf'}, \text{'poly'}\}$
-   - If the kernel is 'poly', an additional integer hyperparameter for degree is sampled: $\text{degree} \in \{2, 3\}$.
+   We individually tune with Optuna for 4 different kernels and select the best kernel. The 4 kernels we use are linear, RBF, degree-2 polynomial and degree-3 polynomial. 
 
 3. **Sample-wise Weights ($a$ parameter):**
    We handle class imbalance identically by weighting the dual formulation bound $C \times r_i$. The minority and majority class weights are controlled by a single parameter $a$, where:
@@ -26,44 +24,10 @@ Instead of manually defining expanding grids, we define bounded probabilistic se
 
 ### 2. Optimization Mechanism
 
-The optimization process operates over a predefined number of trials (e.g., 100 trials) through a defined objective function:
+The optimization process operates over a predefined number of trials (we use 80 trails for each kernel) through a defined objective function:
 
 1. **Objective Function Evaluation:**
-   For each trial, Optuna suggests a configuration of $(C, \gamma, \text{kernel}, a)$. The SVM model is instantiated with the suggested parameters and trained using the sample weights derived from $a$. The model is then evaluated on both the training and validation sets.
+   For each trial, Optuna suggests a configuration of $(C, \gamma, \text{kernel}, a)$. The SVM model is instantiated with the suggested parameters and trained using the sample weights derived from $a$. The model is then evaluated on both the training and validation sets. The best model is evaluated based on the F1 score for switch-class prediction. 
    
-2. **Metric and Overfitting Penalization:**
-   Instead of simply returning the raw validation Switch-F1 score ($S_{val}$) to be maximized, the objective function explicitly checks for overfitting to improve generalization. It calculates both the training score ($S_{train}$) and validation score ($S_{val}$). If the generalization gap ($S_{train} - S_{val}$) is significant, the objective score is artificially penalized to discourage memorization.
-   
-   For example, the penalized objective score can be calculated as:
-   $$\text{Score} = S_{val} - (S_{train} - S_{val})$$
-   
-   *Example*: If a configuration yields $S_{val} = 0.90$ but $S_{train} = 0.99$ (a 0.09 gap), the model is memorizing the data. The objective function returns $0.90 - 0.09 = 0.81$.
-
 3. **Bayesian Updates (TPE Sampler):**
-   After evaluating a configuration, the TPE algorithm updates its internal probabilistic models using the **penalized** objective score. It builds two density functions: one for configurations that yield high penalized scores, and one for low scores. Subsequent trials prioritize sampling from regions where the ratio of these two densities is highest. As a result, Optuna instantly learns that overly complex regions (e.g., excessively high $C$ or $\gamma$) yield lower penalized scores and autonomously steers the search back toward regularized, safer parameters.
-
-### 3. Advantages over Dynamic Grid Search
-
-- **Continuous Exploration:** By sampling from a continuous space, Optuna completely bypasses the quantization limitations of discrete grids, making it more likely to find perfectly tuned float values.
-- **Computational Efficiency:** By utilizing Bayesian inference, the search intelligently abandons unpromising regions of the parameter space early.
-- **Resource Management:** Optuna seamlessly supports robust multiprocessing and early-stopping (Pruning), making it extremely effective at preventing Out-of-Memory (OOM) errors in cuML when parallelizing across GPUs.
-
-### 4. GPU Execution and Memory Bottlenecks (Crucial Warning)
-
-When pairing Optuna with cuML, it is critical to manage how data is allocated to the GPU to prevent severe memory bottlenecks.
-
-1. **The CPU-GPU Bottleneck:**
-   The most common mistake when pairing Optuna with cuML is leaving the dataset as NumPy arrays or Pandas DataFrames in host memory. If your data is in Pandas/NumPy, cuML has to silently copy it from the CPU RAM to the GPU VRAM at the start of every single Optuna trial. In a multi-trial search, this data transfer overhead will actually take longer than the model training itself!
-   
-   *The Fix*: Before you start the Optuna study, convert your training and validation data into CuPy arrays or cuDF DataFrames. Pass these GPU-native objects directly into your objective function so the data never leaves the GPU.
-
-2. **Implementing Sample Weights in cuML:**
-   cuML's SVC API closely mirrors Scikit-Learn, meaning it supports passing an array to the `sample_weight` parameter inside the `.fit()` method.
-   Since you are calculating a dynamic sample weight $a$ inside your Optuna trials, you must generate the resulting $r_+$ and $r_-$ weight array using CuPy (e.g., `cp.where()`), not NumPy. If you generate the weight array in NumPy, passing it to `cuml.svm.SVC.fit()` will trigger that same CPU-GPU transfer bottleneck on every single trial.
-
-3. **Updated GPU Tuning Workflow Summary:**
-   - **Load data** once.
-   - **Push data to the GPU** (e.g., `cupy.asarray(X_train)`).
-   - Let Optuna **pick** $C$, $\gamma$, and $a$.
-   - **Generate the `sample_weight` array** natively on the GPU using CuPy.
-   - **Fit `cuml.svm.SVC` and evaluate**, ensuring your evaluation metric (like F1-score) is also computed entirely on the GPU using `cuml.metrics` to avoid moving predictions back to the CPU.
+   After evaluating a configuration, the TPE algorithm updates its internal probabilistic models using the objective score. It builds two density functions: one for configurations that yield high objective scores, and one for low scores. Subsequent trials prioritize sampling from regions where the ratio of these two densities is highest. As a result, Optuna instantly learns that overly complex regions (e.g., excessively high $C$ or $\gamma$) yield lower objective scores and autonomously steers the search back toward regularized, safer parameters.
