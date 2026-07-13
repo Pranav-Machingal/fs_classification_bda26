@@ -21,6 +21,34 @@ from cuml.svm import SVC, LinearSVC
 from models import StateRoutedCombinedClassifier
 
 
+from sklearn.base import BaseEstimator, ClassifierMixin
+
+class CuMLWrapper(BaseEstimator, ClassifierMixin):
+  def __init__(self, estimator=None):
+    self.estimator = estimator
+
+  def fit(self, X, y, sample_weight=None):
+    self.estimator.fit(X, y, sample_weight=sample_weight)
+    if hasattr(self.estimator, 'classes_'):
+      self.classes_ = self.estimator.classes_
+    return self
+
+  def predict(self, X):
+    return self.estimator.predict(X)
+
+  @property
+  def predict_proba(self):
+    if not hasattr(self.estimator, 'predict_proba'):
+      raise AttributeError
+    return self.estimator.predict_proba
+
+  @property
+  def decision_function(self):
+    if not hasattr(self.estimator, 'decision_function'):
+      raise AttributeError
+    return self.estimator.decision_function
+
+
 class LazyLoadedModel:
 
   def __init__(self, path):
@@ -74,16 +102,15 @@ def _get_cuml_model_for_tuning(params, multi_strategy):
                    random_state=42,
                    cache_size=4096)
 
-  if multi_strategy == 'ovo':
-    wrapper = OneVsOneClassifier(base_svm, n_jobs=1)
-    if hasattr(wrapper, 'set_fit_request'):
-      wrapper.set_fit_request(sample_weight=True)
-    return wrapper
-  elif multi_strategy == 'ovr':
-    wrapper = OneVsRestClassifier(base_svm, n_jobs=1)
-    if hasattr(wrapper, 'set_fit_request'):
-      wrapper.set_fit_request(sample_weight=True)
-    return wrapper
+  if multi_strategy in ['ovo', 'ovr']:
+    wrapped_base = CuMLWrapper(estimator=base_svm)
+    if hasattr(wrapped_base, 'set_fit_request'):
+      wrapped_base.set_fit_request(sample_weight=True)
+
+    if multi_strategy == 'ovo':
+      return OneVsOneClassifier(wrapped_base, n_jobs=1)
+    else:
+      return OneVsRestClassifier(wrapped_base, n_jobs=1)
   else:
     return base_svm
 
@@ -91,6 +118,8 @@ def _get_cuml_model_for_tuning(params, multi_strategy):
 def worker_fit_and_score(params, multi_strategy, is_binary, r_plus, r_minus,
                          child_conn):
   try:
+    import sklearn
+    sklearn.set_config(enable_metadata_routing=True)
     sample_weights = np.where(G_Y_TRAIN_BIN_RAW == 1, r_plus, r_minus)
     model = _get_cuml_model_for_tuning(params, multi_strategy)
 
@@ -212,16 +241,15 @@ def _build_final_model(params, multi_strategy):
                    probability=True,
                    cache_size=4096)
 
-  if multi_strategy == 'ovo':
-    wrapper = OneVsOneClassifier(base_svm, n_jobs=1)
-    if hasattr(wrapper, 'set_fit_request'):
-      wrapper.set_fit_request(sample_weight=True)
-    return wrapper
-  elif multi_strategy == 'ovr':
-    wrapper = OneVsRestClassifier(base_svm, n_jobs=1)
-    if hasattr(wrapper, 'set_fit_request'):
-      wrapper.set_fit_request(sample_weight=True)
-    return wrapper
+  if multi_strategy in ['ovo', 'ovr']:
+    wrapped_base = CuMLWrapper(estimator=base_svm)
+    if hasattr(wrapped_base, 'set_fit_request'):
+      wrapped_base.set_fit_request(sample_weight=True)
+
+    if multi_strategy == 'ovo':
+      return OneVsOneClassifier(wrapped_base, n_jobs=1)
+    else:
+      return OneVsRestClassifier(wrapped_base, n_jobs=1)
   else:
     return base_svm
 
@@ -245,13 +273,23 @@ def evaluate_and_summarize(best_model,
 
   y_test_pred = best_model.predict(X_test)
 
+  y_score = None
+  
   if hasattr(best_model, "predict_proba"):
-    y_score = best_model.predict_proba(X_test)
-    if is_binary and getattr(y_score, 'ndim', len(getattr(y_score, 'shape', []))) == 2:
-      y_score = y_score[:, 1]
-  elif hasattr(best_model, "decision_function"):
-    y_score = best_model.decision_function(X_test)
-  else:
+    try:
+      y_score = best_model.predict_proba(X_test)
+      if is_binary and getattr(y_score, 'ndim', len(getattr(y_score, 'shape', []))) == 2:
+        y_score = y_score[:, 1]
+    except AttributeError:
+      pass
+
+  if y_score is None and hasattr(best_model, "decision_function"):
+    try:
+      y_score = best_model.decision_function(X_test)
+    except AttributeError:
+      pass
+      
+  if y_score is None:
     y_score = y_test_pred
 
   if hasattr(y_test_pred, 'get'):
@@ -281,6 +319,14 @@ def evaluate_and_summarize(best_model,
   np.save(dirs['metrics'] / f'{prefix}_confusion_matrix.npy', cm)
 
 
+def _fit_and_eval_worker(best_params, multi_strategy, X_train, y_train, sample_weights, f1_model_path, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs):
+  import sklearn
+  sklearn.set_config(enable_metadata_routing=True)
+  best_model = _build_final_model(best_params, multi_strategy)
+  best_model.fit(X_train, y_train, sample_weight=sample_weights)
+  joblib.dump(best_model, f1_model_path)
+  evaluate_and_summarize(best_model, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs, force_eval=True)
+
 def tune_and_evaluate(X_train,
                       y_train,
                       X_val,
@@ -289,7 +335,7 @@ def tune_and_evaluate(X_train,
                       y_test,
                       task_name,
                       train_orig,
-                      y_train_raw,
+                      y_train_bin,
                       val_orig,
                       test_orig,
                       y_test_raw,
@@ -374,26 +420,15 @@ def tune_and_evaluate(X_train,
     combined_df = pd.concat(all_trials, ignore_index=True)
     combined_df.to_csv(tuning_csv_path, index=False)
 
-  best_model = _build_final_model(best_params, multi_strategy)
   sample_weights = get_weights(y_train_bin_raw, best_params['a'])
-
-  best_model.fit(X_train, y_train, sample_weight=sample_weights)
-
-  joblib.dump(best_model, f1_model_path)
-
-  evaluate_and_summarize(best_model,
-                         X_test,
-                         y_test,
-                         is_binary,
-                         classes,
-                         task_name,
-                         test_orig,
-                         y_test_raw,
-                         dirs,
-                         force_eval=True)
-
-  del best_model
-  gc.collect()
+  
+  ctx = mp.get_context('fork')
+  p = ctx.Process(target=_fit_and_eval_worker, args=(best_params, multi_strategy, X_train, y_train, sample_weights, f1_model_path, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs))
+  p.start()
+  p.join()
+  
+  if p.exitcode != 0:
+    raise RuntimeError(f"Final model fitting failed for {task_name}")
 
   return LazyLoadedModel(f1_model_path)
 
@@ -406,7 +441,7 @@ def run_multi_class_suite(X_train,
                           y_test_3c,
                           base_name,
                           train_orig,
-                          y_train_raw,
+                          y_train_bin,
                           val_orig,
                           test_orig,
                           y_test_raw,
@@ -423,7 +458,7 @@ def run_multi_class_suite(X_train,
       y_test_3c,
       f"{base_name}_CommonC_OvO",
       train_orig,
-      y_train_raw,
+      y_train_bin,
       val_orig,
       test_orig,
       y_test_raw,
@@ -440,7 +475,7 @@ def run_multi_class_suite(X_train,
       y_test_3c,
       f"{base_name}_CommonC_OvR",
       train_orig,
-      y_train_raw,
+      y_train_bin,
       val_orig,
       test_orig,
       y_test_raw,
@@ -457,7 +492,7 @@ if __name__ == "__main__":
 
   data = load_and_preprocess_data(args.feature_type, args.k, dirs['models'])
 
-  X_train_raw, y_train_raw, y_train_bin, y_train_3c, train_orig = data[
+  X_train_raw, y_train_bin, y_train_bin, y_train_3c, train_orig = data[
       'X_train'], data['y_train_raw'], data['y_train_bin'], data[
           'y_train_3c'], data['train_orig']
   X_val_raw, y_val_raw, y_val_bin, y_val_3c, val_orig = data['X_val'], data[
@@ -483,7 +518,7 @@ if __name__ == "__main__":
                       y_test_bin,
                       "Global_Binary",
                       train_orig,
-                      y_train_raw,
+                      y_train_bin,
                       val_orig,
                       test_orig,
                       y_test_raw,
@@ -500,7 +535,7 @@ if __name__ == "__main__":
                           y_test_3c,
                           "Global_3Class",
                           train_orig,
-                          y_train_raw,
+                          y_train_bin,
                           val_orig,
                           test_orig,
                           y_test_raw,

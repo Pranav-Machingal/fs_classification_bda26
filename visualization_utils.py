@@ -5,7 +5,7 @@ import pandas as pd
 import pickle
 from pathlib import Path
 
-def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1', feature_type='fusionprot', k=3):
+def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fusionprot', k=3):
   """
   Visualizes 2x2 CM, Global Binary P/R, Granular Sub-Type P/R, and Hyperparameter 
   tuning curves (dynamically generating separate subplots for combined ensemble models).
@@ -29,7 +29,7 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
   metrics_dir = base_dir / 'metrics'
   tuning_dir = base_dir / 'tuning'
   
-  summary_path = metrics_dir / f'{task_name}_{weight_strategy}_test_summary.pkl'
+  summary_path = metrics_dir / f'{task_name}_test_summary.pkl'
   
   if not summary_path.exists():
     print(f"Error: Could not find summary file at {summary_path}")
@@ -59,51 +59,93 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
   n_tune_plots = len(sub_models)
   
   # 3. Initialize Advanced Grid Layout
-  fig = plt.figure(figsize=(24, 14))
-  gs = fig.add_gridspec(2, 1, height_ratios=[1, 1.2], hspace=0.3)
+  fig = plt.figure(figsize=(24, 10))
+  gs = fig.add_gridspec(2, 1, height_ratios=[0.3, 1.2], hspace=0.2)
   
   # Top row adapts to the number of constituent sub-models
   gs_top = gs[0].subgridspec(1, n_tune_plots, wspace=0.2)
   # Bottom row is strictly 4 columns for the metrics
   gs_bottom = gs[1].subgridspec(1, 4, wspace=0.25)
   
-  # --- ROW 1: Hyperparameter Tuning Curves (1 for each sub-model) ---
+  # --- ROW 1: Best Hyperparameters (1 for each sub-model) ---
   for i, sub_task in enumerate(sub_models):
     ax = fig.add_subplot(gs_top[0, i])
-    tuning_path = tuning_dir / f'{sub_task}_{weight_strategy}_tuning.csv'
+    tuning_path = tuning_dir / f'{sub_task}_tuning.csv'
     
     if tuning_path.exists():
       df = pd.read_csv(tuning_path)
       
-      # Flexible column mapping in case old tuning logs exist
-      train_col = f'train_{metric_focus}'
-      val_col = f'val_{metric_focus}'
-      if val_col not in df.columns:
-        val_col = 'val_balanced_accuracy'
-        train_col = 'train_balanced_accuracy'
+      # Find best configuration
+      if 'user_attrs_val_f1' in df.columns:
+        best_row = df.sort_values('user_attrs_val_f1', ascending=False).iloc[0]
+        train_score = best_row['user_attrs_train_f1']
+        val_score = best_row['user_attrs_val_f1']
+      elif 'val_f1' in df.columns:
+        best_row = df.sort_values('val_f1', ascending=False).iloc[0]
+        train_score = best_row['train_f1']
+        val_score = best_row['val_f1']
+      else:
+        best_row = df.iloc[0]
+        train_score, val_score = 0.0, 0.0
+
+      # Extract params
+      params_str = []
+      if 'kernel_type' in best_row and pd.notna(best_row['kernel_type']):
+        params_str.append(f"Kernel: {best_row['kernel_type']}")
+      elif 'kernel' in best_row and pd.notna(best_row['kernel']):
+        params_str.append(f"Kernel: {best_row['kernel']}")
         
-      # Format 'Kernel_Degree' label cleanly
-      df['config'] = df.apply(
-        lambda row: f"{row.get('kernel', 'unknown')}{'_'+str(int(row['degree'])) if pd.notna(row.get('degree')) else ''}", 
-        axis=1
-      )
+      for col in df.columns:
+        if col.startswith('params_') and pd.notna(best_row[col]):
+          p_name = col.replace('params_', '')
+          val = best_row[col]
+          if isinstance(val, float) and val > 0 and val < 0.01:
+            params_str.append(f"{p_name}: {val:.1e}")
+          elif isinstance(val, float):
+            params_str.append(f"{p_name}: {val:.4f}")
+          else:
+            params_str.append(f"{p_name}: {val}")
+            
+      # Support for alternative CSV format without 'params_' prefix
+      if not any(col.startswith('params_') for col in df.columns):
+        for p_name in ['C', 'gamma', 'degree', 'coef0', 'a']:
+          if p_name in df.columns and pd.notna(best_row[p_name]):
+            val = best_row[p_name]
+            if isinstance(val, float) and val > 0 and val < 0.01:
+              params_str.append(f"{p_name}: {val:.1e}")
+            elif isinstance(val, float):
+              params_str.append(f"{p_name}: {val:.4f}")
+            else:
+              params_str.append(f"{p_name}: {val}")
+            
+      params_text = "\n".join(params_str)
       
-      colors = plt.cm.tab10.colors
-      for j, config in enumerate(df['config'].unique()):
-        sub_df = df[df['config'] == config].sort_values('C')
-        color = colors[j % len(colors)]
-        ax.plot(sub_df['C'], sub_df[train_col], linestyle='--', color=color, marker='o', alpha=0.5, label=f"{config} (Train)")
-        ax.plot(sub_df['C'], sub_df[val_col], linestyle='-', color=color, marker='s', linewidth=2, label=f"{config} (Val)")
-        
-      ax.set_xscale('log')
-      ax.set_xlabel('C (Regularization Parameter)', fontsize=11)
-      ax.set_ylabel(f'Score ({metric_focus.upper()})', fontsize=11)
-      ax.set_title(f'Tuning: {sub_task}', fontweight='bold', fontsize=12)
-      ax.legend(fontsize=9, ncol=2)
-      ax.grid(True, alpha=0.3)
+      # Load Sub-Task Test Metrics
+      sub_summary_path = metrics_dir / f'{sub_task}_test_summary.pkl'
+      test_bal_acc, test_switch_f1 = 0.0, 0.0
+      if sub_summary_path.exists():
+        with open(sub_summary_path, 'rb') as f:
+          sub_summary = pickle.load(f)
+        sub_metrics = sub_summary.get('best_f1_model_test_metrics', {})
+        test_bal_acc = sub_metrics.get('balanced_accuracy', 0.0)
+        switch_p = sub_metrics.get('switch_precision', 0)
+        switch_r = sub_metrics.get('switch_recall', 0)
+        if (switch_p + switch_r) > 0:
+          test_switch_f1 = 2 * (switch_p * switch_r) / (switch_p + switch_r)
+          
+      score_text = (f"Train Switch-F1: {train_score:.4f}\n"
+                    f"Val Switch-F1:   {val_score:.4f}\n"
+                    f"Test Switch-F1:  {test_switch_f1:.4f}\n"
+                    f"Test Bal-Acc:    {test_bal_acc:.4f}")
+      
+      ax.text(0.3, 0.5, f"Best Hyperparameters:\n{params_text}", ha='center', va='center', fontsize=12, family='monospace', bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+      ax.text(0.75, 0.5, score_text, ha='center', va='center', fontsize=12, fontweight='bold', color='darkblue', family='monospace')
+      
+      ax.set_title(f'Selected Model: {sub_task}', fontweight='bold', fontsize=14)
+      ax.axis('off')
     else:
       ax.text(0.5, 0.5, f"Tuning log missing for\n{sub_task}", ha='center', va='center', fontsize=12)
-      ax.set_title(f'Tuning: {sub_task}', fontweight='bold', fontsize=12)
+      ax.set_title(f'Selected Model: {sub_task}', fontweight='bold', fontsize=14)
       ax.axis('off')
       
   # Extract granular data for lower plots
@@ -213,7 +255,7 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
   # Main Title
   fig.suptitle(
     f"Comprehensive Evaluation: {task_name}\n"
-    f"Weight Strategy: {weight_strategy.upper()} | Features: {feature_type.upper()}\n"
+    f"Features: {feature_type.upper()}\n"
     f"Switch F1-Score: {switch_f1:.4f}",
     fontsize=18, fontweight='bold', y=1.03
   )
@@ -222,22 +264,18 @@ def plot_comprehensive_evaluation(task_name, weight_strategy, metric_focus='f1',
   plt.tight_layout(rect=[0, 0, 1, 0.98])
   plt.show()
 
-def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=['fusionprot', 'saprot', 'protssn', 'prosst', 'kndrf', 'kncsic'], k_values=[1, 3, 5, 7]):
+def rank_tasks_by_switch_f1(feature_types=['fusionprot', 'saprot', 'protssn', 'prosst', 'kndrf', 'kncsic'], k_values=[1, 3, 5, 7]):
   """
   Ranks a predefined list of tasks based on their switch-prediction F1-scores
-  across multiple weight strategies and feature types.
+  across multiple feature types.
   """
   tasks = [
     'Global_Binary', 
     'Global_3Class_CommonC_OvR', 
     'Global_3Class_CommonC_OvO', 
-    'Global_3Class_IndivOvR_Combined', 
-    'Global_3Class_IndivOvO_Combined', 
     'Combined_InputDep_Binary', 
     'Combined_InputDep_3Class_CommonC_OvR',
-    'Combined_InputDep_3Class_CommonC_OvO', 
-    'Combined_InputDep_3Class_IndivOvR', 
-    'Combined_InputDep_3Class_IndivOvO'
+    'Combined_InputDep_3Class_CommonC_OvO'
   ]
   
   results = []
@@ -261,30 +299,28 @@ def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=
     for base_dir, feature_label in base_dirs:
       metrics_dir = base_dir / 'metrics'
       
-      for weight_strategy in weight_strategies:
-        for task_name in tasks:
-          summary_path = metrics_dir / f'{task_name}_{weight_strategy}_test_summary.pkl'
+      for task_name in tasks:
+        summary_path = metrics_dir / f'{task_name}_test_summary.pkl'
+        
+        # Skip configurations that haven't been trained yet
+        if not summary_path.exists():
+          continue
           
-          # Skip configurations that haven't been trained yet
-          if not summary_path.exists():
-            continue
-            
-          with open(summary_path, 'rb') as f:
-            summary = pickle.load(f)
-            
-          metrics = summary.get('best_f1_model_test_metrics', {})
+        with open(summary_path, 'rb') as f:
+          summary = pickle.load(f)
           
-          # Calculate Switch F1-Score
-          switch_p = metrics.get('switch_precision', 0)
-          switch_r = metrics.get('switch_recall', 0)
-          switch_f1 = 2 * (switch_p * switch_r) / (switch_p + switch_r) if (switch_p + switch_r) > 0 else 0.0
-          
-          results.append({
-            'Task': task_name, 
-            'Weight_Strategy': weight_strategy,
-            'Feature_Type': feature_label,
-            'Switch_F1': switch_f1
-          })
+        metrics = summary.get('best_f1_model_test_metrics', {})
+        
+        # Calculate Switch F1-Score
+        switch_p = metrics.get('switch_precision', 0)
+        switch_r = metrics.get('switch_recall', 0)
+        switch_f1 = 2 * (switch_p * switch_r) / (switch_p + switch_r) if (switch_p + switch_r) > 0 else 0.0
+        
+        results.append({
+          'Task': task_name, 
+          'Feature_Type': feature_label,
+          'Switch_F1': switch_f1
+        })
           
   if not results:
     print("No evaluation results found for the specified configurations.")
@@ -295,12 +331,12 @@ def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=
   df_rank = df_rank.sort_values(by='Switch_F1', ascending=False).reset_index(drop=True)
   
   print(f"\n=========================================================================================================")
-  print(f" TASK RANKING (Across all specified Weight Strategies & Feature Types)")
+  print(f" TASK RANKING (Across all specified Feature Types)")
   print(f"=========================================================================================================")
-  print(f"Rank | {'Task Name':<38} | {'Strategy':<8} | {'Features':<15} | Switch F1")
+  print(f"Rank | {'Task Name':<38} | {'Features':<15} | Switch F1")
   print(f"---------------------------------------------------------------------------------------------------------")
   for idx, row in df_rank.iterrows():
-    print(f"{idx + 1:4d} | {row['Task']:<38} | {row['Weight_Strategy']:<8} | {row['Feature_Type']:<15} | {row['Switch_F1']:.4f}")
+    print(f"{idx + 1:4d} | {row['Task']:<38} | {row['Feature_Type']:<15} | {row['Switch_F1']:.4f}")
   print(f"=========================================================================================================\n")
     
   return df_rank
@@ -310,11 +346,11 @@ def rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=
 # ==========================================
 if __name__ == "__main__":
   # For FusionProt embeddings:
-  # plot_comprehensive_evaluation(task_name="Global_Binary", weight_strategy="binary", feature_type="fusionprot")
+  # plot_comprehensive_evaluation(task_name="Global_Binary", feature_type="fusionprot")
   
   # Or for a unified 3-class model (This will generate 3 separate tuning plots in the top row!):
-  # plot_comprehensive_evaluation(task_name="Combined_InputDep_3Class_CommonC_OvR", weight_strategy="type", feature_type="fusionprot")
+  # plot_comprehensive_evaluation(task_name="Combined_InputDep_3Class_CommonC_OvR", feature_type="fusionprot")
   
   # Rank the tasks across everything:
-  # rank_tasks_by_switch_f1(weight_strategies=['binary', 'type'], feature_types=['fusionprot', 'kndrf'], k_values=[3, 5])
+  # rank_tasks_by_switch_f1(feature_types=['fusionprot', 'kndrf'], k_values=[3, 5])
   pass
