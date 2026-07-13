@@ -265,7 +265,7 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   plt.show()
 
 def rank_tasks_by_switch_f1(feature_types=['fusionprot', 'saprot', 'protssn', 'prosst', 'kndrf', 'kncsic'], 
-                            k_values=[1, 3, 5, 7]
+                            k_values=[1, 3, 5, 7],
                             tasks = [
                             'Global_Binary', 
                             'Global_3Class_CommonC_OvR', 
