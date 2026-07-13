@@ -4,7 +4,8 @@ START_K="${1:-1}"
 END_K="${2:-12}"
 
 PLM_FEATURES=("fusionprot" "saprot" "protssn" "prosst")
-KMER_FEATURES=("kncsic" "kndrf")
+# KMER_FEATURES=("kncsic" "kndrf")
+KMER_FEATURES=("kncsic")
 
 # Train binary classifiers with PLM features
 echo -e "\n ## Training binary classifiers with PLM features ##\n"

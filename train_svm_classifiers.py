@@ -396,8 +396,8 @@ def tune_and_evaluate(X_train,
   G_Y_TRAIN = y_train
   G_X_VAL = X_val
   G_Y_VAL = y_val
-  G_TRAIN_ORIG = np.array([SS_CLASSES.index(s) for s in train_orig])
-  G_VAL_ORIG = np.array([SS_CLASSES.index(s) for s in val_orig])
+  G_TRAIN_ORIG = train_orig
+  G_VAL_ORIG = val_orig
   G_Y_TRAIN_BIN_RAW = y_train_bin
 
   optuna.logging.set_verbosity(optuna.logging.WARNING)

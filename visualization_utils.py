@@ -264,19 +264,20 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   plt.tight_layout(rect=[0, 0, 1, 0.98])
   plt.show()
 
-def rank_tasks_by_switch_f1(feature_types=['fusionprot', 'saprot', 'protssn', 'prosst', 'kndrf', 'kncsic'], k_values=[1, 3, 5, 7]):
+def rank_tasks_by_switch_f1(feature_types=['fusionprot', 'saprot', 'protssn', 'prosst', 'kndrf', 'kncsic'], 
+                            k_values=[1, 3, 5, 7]
+                            tasks = [
+                            'Global_Binary', 
+                            'Global_3Class_CommonC_OvR', 
+                            'Global_3Class_CommonC_OvO', 
+                            'Combined_InputDep_Binary', 
+                            'Combined_InputDep_3Class_CommonC_OvR',
+                            'Combined_InputDep_3Class_CommonC_OvO'
+                            ]):
   """
   Ranks a predefined list of tasks based on their switch-prediction F1-scores
   across multiple feature types.
   """
-  tasks = [
-    'Global_Binary', 
-    'Global_3Class_CommonC_OvR', 
-    'Global_3Class_CommonC_OvO', 
-    'Combined_InputDep_Binary', 
-    'Combined_InputDep_3Class_CommonC_OvR',
-    'Combined_InputDep_3Class_CommonC_OvO'
-  ]
   
   results = []
   
