@@ -391,8 +391,6 @@ def tune_and_evaluate(X_train,
       f"\n--- Tuning via Optuna: {task_name} ({n_trials} trials/kernel, max {max_parallel_kernels} concurrent processes) ---"
   )
 
-  _, y_train_bin_raw, _ = decode_labels(y_train_raw)
-
   global G_X_TRAIN, G_Y_TRAIN, G_X_VAL, G_Y_VAL, G_TRAIN_ORIG, G_VAL_ORIG, G_Y_TRAIN_BIN_RAW
   G_X_TRAIN = X_train
   G_Y_TRAIN = y_train
@@ -400,7 +398,7 @@ def tune_and_evaluate(X_train,
   G_Y_VAL = y_val
   G_TRAIN_ORIG = np.array([SS_CLASSES.index(s) for s in train_orig])
   G_VAL_ORIG = np.array([SS_CLASSES.index(s) for s in val_orig])
-  G_Y_TRAIN_BIN_RAW = y_train_bin_raw
+  G_Y_TRAIN_BIN_RAW = y_train_bin
 
   optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -453,7 +451,7 @@ def tune_and_evaluate(X_train,
     combined_df = pd.concat(all_trials, ignore_index=True)
     combined_df.to_csv(tuning_csv_path, index=False)
 
-  sample_weights = get_weights(y_train_bin_raw, best_params['a'])
+  sample_weights = get_weights(y_train_bin, best_params['a'])
   
   ctx = mp.get_context('fork')
   p = ctx.Process(target=_fit_and_eval_worker, args=(best_params, multi_strategy, X_train, y_train, sample_weights, f1_model_path, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs))
