@@ -59,8 +59,8 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   n_tune_plots = len(sub_models)
   
   # 3. Initialize Advanced Grid Layout
-  fig = plt.figure(figsize=(24, 10))
-  gs = fig.add_gridspec(2, 1, height_ratios=[0.3, 1.2], hspace=0.2)
+  fig = plt.figure(figsize=(24, 6.5))
+  gs = fig.add_gridspec(2, 1, height_ratios=[0.01, 1.2], hspace=0.0)
   
   # Top row adapts to the number of constituent sub-models
   gs_top = gs[0].subgridspec(1, n_tune_plots, wspace=0.2)
@@ -138,14 +138,14 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
                     f"Test Switch-F1:  {test_switch_f1:.4f}\n"
                     f"Test Bal-Acc:    {test_bal_acc:.4f}")
       
-      ax.text(0.3, 0.5, f"Best Hyperparameters:\n{params_text}", ha='center', va='center', fontsize=12, family='monospace', bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
-      ax.text(0.75, 0.5, score_text, ha='center', va='center', fontsize=12, fontweight='bold', color='darkblue', family='monospace')
+      # ax.text(0.3, 0.5, f"Best Hyperparameters:\n{params_text}", ha='center', va='center', fontsize=12, family='monospace', bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
+      # ax.text(0.75, 0.5, score_text, ha='center', va='center', fontsize=12, fontweight='bold', color='darkblue', family='monospace')
       
-      ax.set_title(f'Selected Model: {sub_task}', fontweight='bold', fontsize=14)
+      # ax.set_title(f'Selected Model: {sub_task}', fontweight='bold', fontsize=14)
       ax.axis('off')
     else:
-      ax.text(0.5, 0.5, f"Tuning log missing for\n{sub_task}", ha='center', va='center', fontsize=12)
-      ax.set_title(f'Selected Model: {sub_task}', fontweight='bold', fontsize=14)
+      # ax.text(0.5, 0.5, f"Tuning log missing for\n{sub_task}", ha='center', va='center', fontsize=12)
+      # ax.set_title(f'Selected Model: {sub_task}', fontweight='bold', fontsize=14)
       ax.axis('off')
       
   # Extract granular data for lower plots
@@ -196,7 +196,8 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   if ns_keys:
     ns_p = [sm[k]['precision'] for k in ns_keys]
     ns_r = [sm[k]['recall'] for k in ns_keys]
-    ns_labels = [f"{k}\n(n={sm[k]['support']})" for k in ns_keys]
+    fmt = lambda s: s.replace('a', r'$\alpha$').replace('b', r'$\beta$').replace('c', r'$c$').replace('->', r'$\rightarrow$')
+    ns_labels = [f"{fmt(k)}\n(n={sm[k]['support']})" for k in ns_keys]
     
     x = np.arange(len(ns_keys))
     width = 0.35
@@ -224,7 +225,7 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   if s_keys:
     s_p = [sm[k]['precision'] for k in s_keys]
     s_r = [sm[k]['recall'] for k in s_keys]
-    s_labels = [f"{k}\n(n={sm[k]['support']})" for k in s_keys]
+    s_labels = [f"{fmt(k)}\n(n={sm[k]['support']})" for k in s_keys]
     
     x = np.arange(len(s_keys))
     width = 0.35
@@ -253,12 +254,12 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   switch_f1 = 2 * (switch_p * switch_r) / (switch_p + switch_r) if (switch_p + switch_r) > 0 else 0.0
   
   # Main Title
-  fig.suptitle(
-    f"Comprehensive Evaluation: {task_name}\n"
-    f"Features: {feature_type.upper()}\n"
-    f"Switch F1-Score: {switch_f1:.4f}",
-    fontsize=18, fontweight='bold', y=1.03
-  )
+  # fig.suptitle(
+  #   f"Comprehensive Evaluation: {task_name}\n"
+  #   f"Features: {feature_type.upper()}\n"
+  #   f"Switch F1-Score: {switch_f1:.4f}",
+  #   fontsize=18, fontweight='bold', y=1.03
+  # )
   
   # Set tight layout specifically constrained to not overlap the big title
   plt.tight_layout(rect=[0, 0, 1, 0.98])
