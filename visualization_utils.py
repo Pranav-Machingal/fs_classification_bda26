@@ -59,13 +59,14 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   n_tune_plots = len(sub_models)
   
   # 3. Initialize Advanced Grid Layout
-  fig = plt.figure(figsize=(24, 6.5))
+  fig = plt.figure(figsize=(21, 6.5))
   gs = fig.add_gridspec(2, 1, height_ratios=[0.01, 1.2], hspace=0.0)
   
   # Top row adapts to the number of constituent sub-models
   gs_top = gs[0].subgridspec(1, n_tune_plots, wspace=0.2)
   # Bottom row is strictly 4 columns for the metrics
-  gs_bottom = gs[1].subgridspec(1, 4, wspace=0.25)
+  is_binary = "Binary" in task_name
+  gs_bottom = gs[1].subgridspec(1, 3, wspace=0.25, width_ratios=[0.7, 1.0, 1.2 if is_binary else 2.0])
   
   # --- ROW 1: Best Hyperparameters (1 for each sub-model) ---
   for i, sub_task in enumerate(sub_models):
@@ -165,12 +166,12 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
     fp = int(no_switch_support - tn)
     
     cm_2x2 = np.array([[tn, fp], [fn, tp]])
-    sns.heatmap(cm_2x2, annot=True, fmt='d', cmap='Blues', ax=ax_cm, cbar=False, annot_kws={"size": 16})
-    ax_cm.set_xticklabels(['No Switch (0)', 'Switch (1)'], fontsize=12)
-    ax_cm.set_yticklabels(['No Switch (0)', 'Switch (1)'], fontsize=12, rotation=0)
-    ax_cm.set_xlabel('Predicted Label', fontsize=12)
-    ax_cm.set_ylabel('True Label', fontsize=12)
-  ax_cm.set_title('Switch vs No-Switch\nConfusion Matrix', fontweight='bold', fontsize=14)
+    sns.heatmap(cm_2x2, annot=True, fmt='d', cmap='Blues', ax=ax_cm, cbar=False, annot_kws={"size": 22})
+    ax_cm.set_xticklabels(['No Switch (0)', 'Switch (1)'], fontsize=18)
+    ax_cm.set_yticklabels(['No Switch (0)', 'Switch (1)'], fontsize=18, rotation=90)
+    ax_cm.set_xlabel('Predicted Label', fontsize=20)
+    ax_cm.set_ylabel('True Label', fontsize=20)
+  ax_cm.set_title('Switch vs No-Switch\nConfusion Matrix', fontweight='bold', fontsize=20)
   
   # --- ROW 2, COL 2: Global Binary P/R Metrics ---
   ax_bin = fig.add_subplot(gs_bottom[0, 1])
@@ -183,70 +184,52 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   
   bars = ax_bin.bar(bar_labels, bar_values, color=bar_colors, edgecolor='black')
   ax_bin.set_ylim(0, 1.1)
-  ax_bin.set_title('Global Binary Performance', fontweight='bold', fontsize=14)
-  ax_bin.set_ylabel('Score', fontsize=12)
+  ax_bin.set_title('Global Binary Performance', fontweight='bold', fontsize=20)
+  ax_bin.set_ylabel('Score', fontsize=18)
+  ax_bin.set_xticks(range(len(bar_labels)))
+  ax_bin.set_xticklabels(bar_labels, fontsize=17.5, rotation=0, ha='center')
+  ax_bin.tick_params(axis='y', labelsize=18)
   ax_bin.grid(alpha=0.3, axis='y')
   for bar in bars:
     yval = bar.get_height()
-    ax_bin.text(bar.get_x() + bar.get_width()/2, yval + 0.02, f"{yval:.2f}", ha='center', va='bottom', fontweight='bold')
+    ax_bin.text(bar.get_x() + bar.get_width()/2, yval + 0.02, f"{yval:.2f}", ha='center', va='bottom', fontweight='bold', fontsize=16)
     
-  # --- ROW 2, COL 3: No-Switch Granular Types (Grouped Bar) ---
-  ax_ns_types = fig.add_subplot(gs_bottom[0, 2])
-  ns_keys = [k for k in sm.keys() if k[0] == k[2] and sm[k]['support'] > 0]
-  if ns_keys:
-    ns_p = [sm[k]['precision'] for k in ns_keys]
-    ns_r = [sm[k]['recall'] for k in ns_keys]
-    fmt = lambda s: s.replace('a', r'$\alpha$').replace('b', r'$\beta$').replace('c', r'$c$').replace('->', r'$\rightarrow$')
-    ns_labels = [f"{fmt(k)}\n(n={sm[k]['support']})" for k in ns_keys]
-    
-    x = np.arange(len(ns_keys))
-    width = 0.35
-    bars_p = ax_ns_types.bar(x - width/2, ns_p, width, label='Precision', color='#99ccff', edgecolor='black')
-    bars_r = ax_ns_types.bar(x + width/2, ns_r, width, label='Recall', color='#66b3ff', edgecolor='black')
-    
-    ax_ns_types.set_xticks(x)
-    ax_ns_types.set_xticklabels(ns_labels, fontsize=11)
-    ax_ns_types.set_ylim(0, 1.15)
-    ax_ns_types.set_title('No-Switch Sub-Types', fontweight='bold', fontsize=14)
-    ax_ns_types.legend(loc='upper right', fontsize=10)
-    ax_ns_types.grid(alpha=0.3, axis='y')
-    
-    for bar in bars_p + bars_r:
-      yval = bar.get_height()
-      if yval > 0:
-        ax_ns_types.text(bar.get_x() + bar.get_width()/2, yval + 0.01, f"{yval:.2f}", ha='center', va='bottom', fontsize=9)
-  else:
-    ax_ns_types.text(0.5, 0.5, "No No-Switch types\npresent in test set", ha='center', va='center', fontsize=12)
-    ax_ns_types.axis('off')
-
-  # --- ROW 2, COL 4: Switch Granular Types (Grouped Bar) ---
-  ax_s_types = fig.add_subplot(gs_bottom[0, 3])
+  # --- ROW 2, COL 3: Switch Granular Types ---
+  ax_types = fig.add_subplot(gs_bottom[0, 2])
+  
   s_keys = [k for k in sm.keys() if k[0] != k[2] and sm[k]['support'] > 0]
+  
+  fmt = lambda s: s.replace('a', r'$\alpha$').replace('b', r'$\beta$').replace('c', r'$c$').replace('->', r'$\rightarrow$')
+  s_labels = [f"{fmt(k)}\n(n={sm[k]['support']})" for k in s_keys]
+  
+  x = np.arange(len(s_keys))
+  width = 0.55 if is_binary else 0.42
   if s_keys:
     s_p = [sm[k]['precision'] for k in s_keys]
     s_r = [sm[k]['recall'] for k in s_keys]
-    s_labels = [f"{fmt(k)}\n(n={sm[k]['support']})" for k in s_keys]
     
-    x = np.arange(len(s_keys))
-    width = 0.35
-    bars_p = ax_s_types.bar(x - width/2, s_p, width, label='Precision', color='#ff9999', edgecolor='black')
-    bars_r = ax_s_types.bar(x + width/2, s_r, width, label='Recall', color='#ff6666', edgecolor='black')
+    if is_binary:
+      bars_s_p = []
+      bars_s_r = ax_types.bar(x, s_r, width, label='Recall', color='#ff6666', edgecolor='black')
+    else:
+      bars_s_p = ax_types.bar(x - width/2, s_p, width, label='Precision', color='#ff9999', edgecolor='black')
+      bars_s_r = ax_types.bar(x + width/2, s_r, width, label='Recall', color='#ff6666', edgecolor='black')
     
-    ax_s_types.set_xticks(x)
-    # Rotate labels if there are a lot of switch types to prevent crowding
-    ax_s_types.set_xticklabels(s_labels, rotation=45 if len(s_keys) > 3 else 0, fontsize=11)
-    ax_s_types.set_ylim(0, 1.15)
-    ax_s_types.set_title('Switch Sub-Types', fontweight='bold', fontsize=14)
-    ax_s_types.legend(loc='upper right', fontsize=10)
-    ax_s_types.grid(alpha=0.3, axis='y')
+    ax_types.set_xticks(x)
+    ax_types.set_xticklabels(s_labels, rotation=0, fontsize=18)
+    ax_types.set_ylim(0, 1.35)
+    ax_types.set_title('Fold-switch Sub-Types', fontweight='bold', fontsize=20)
+    ax_types.legend(loc='upper right', fontsize=16)
+    ax_types.tick_params(axis='y', labelsize=18)
+    ax_types.grid(alpha=0.3, axis='y')
     
-    for bar in bars_p + bars_r:
+    for bar in list(bars_s_p) + list(bars_s_r):
       yval = bar.get_height()
       if yval > 0:
-        ax_s_types.text(bar.get_x() + bar.get_width()/2, yval + 0.01, f"{yval:.2f}", ha='center', va='bottom', fontsize=9)
+        ax_types.text(bar.get_x() + bar.get_width()/2, yval + 0.01, f"{yval:.2f}", ha='center', va='bottom', fontsize=16)
   else:
-    ax_s_types.text(0.5, 0.5, "No Switch types\npresent in test set", ha='center', va='center', fontsize=12)
-    ax_s_types.axis('off')
+    ax_types.text(0.5, 0.5, "No Switch Sub-Types\npresent in test set", ha='center', va='center', fontsize=20)
+    ax_types.axis('off')
     
   # Calculate Switch F1-Score
   switch_p = metrics.get('switch_precision', 0)
