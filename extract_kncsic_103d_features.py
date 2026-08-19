@@ -116,8 +116,8 @@ def compute_103d_features(csv_file_path, cif_dir):
   return feature_dict
 
 if __name__ == "__main__":
-  data_file_path = 'residue_dihedral_rotational_freedom.csv'
-  cif_dir = 'fixed_cif_files'
+  data_file_path = 'dataset/residue_secondary_structures.csv'
+  cif_dir = 'dataset/fixed_cif_files'
   
   feature_dict = compute_103d_features(data_file_path, cif_dir)
   

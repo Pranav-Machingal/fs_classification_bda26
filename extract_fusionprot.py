@@ -37,12 +37,12 @@ from torchdrug import core, transforms, data
 from model import model, cdconv, gvp, dataset, task, protbert, siamdiff
 
 
-def _load_and_extract_chain_to_pdb(raw_id, cif_dir, required_res_ids):
+def _load_and_extract_chain_to_pdb(raw_id, cif_dir, required_res_ids=None):
   """
-  Reads the CIF file, extracts the specific chain, applies memory-safe 
-  truncation (max 1022 residues), and writes it to a temporary PDB file.
+  Reads the CIF file, extracts the specific chain, and slices it into 
+  overlapping chunks (max 1022 residues) to prevent ESM Tensor Size Crashes.
+  Returns a list of (tmp_pdb_path, real_res_ids) tuples.
   """
-
   # 1. Robust Case-Insensitive File Resolution
   source = os.path.join(cif_dir, f"{raw_id}.cif")
   
@@ -50,7 +50,7 @@ def _load_and_extract_chain_to_pdb(raw_id, cif_dir, required_res_ids):
     array = strucio.load_structure(source)
   except Exception as e:
     print(f"\nError reading {source}: {e}")
-    return None, None
+    return []
 
   array = array[struc.filter_amino_acids(array)]
   
@@ -72,48 +72,51 @@ def _load_and_extract_chain_to_pdb(raw_id, cif_dir, required_res_ids):
   array = array[keep_idx]
   
   if len(array) == 0:
-    return None, None
+    return []
 
-  # 4. TRUNCATE: Prevent ESM Tensor Size Crashes (>1022 residues)
-  starts = struc.get_residue_starts(array)
-  if len(starts) > 1022:
-    real_res_ids = array.res_id[starts]
-    req_set = set(required_res_ids)
-    req_indices = [i for i, r in enumerate(real_res_ids) if r in req_set]
-    
-    if req_indices:
-      min_idx, max_idx = min(req_indices), max(req_indices)
-      if max_idx - min_idx >= 1022:
-        max_idx = min_idx + 1021  # Clamp if targets are unbelievably far apart
-        
-      center_idx = (min_idx + max_idx) // 2
-      start_idx = max(0, center_idx - 511)
-      end_idx = min(len(starts), start_idx + 1022)
-      
-      if end_idx - start_idx < 1022 and start_idx > 0:
-        start_idx = max(0, end_idx - 1022)
-        
-      # Slice the array perfectly by atom indices to preserve continuity
-      first_atom_idx = starts[start_idx]
-      last_atom_idx = starts[end_idx] if end_idx < len(starts) else len(array)
-      array = array[first_atom_idx:last_atom_idx]
-      starts = struc.get_residue_starts(array)
-
-  real_res_ids = array.res_id[starts]
-  
   # Strip biotite bonds to guarantee NO CONECT records are written
   array.bonds = None 
 
-  fd, tmp_path = tempfile.mkstemp(suffix=".pdb")
-  os.close(fd)
-  strucio.save_structure(tmp_path, array)
+  # 4. Chunk the structure into overlapping 1022-residue windows
+  starts = struc.get_residue_starts(array)
   
-  return tmp_path, real_res_ids
+  max_len = 1022
+  overlap = 511
+  stride = max_len - overlap
+
+  chunk_ranges = []
+  if len(starts) <= max_len:
+    chunk_ranges.append((0, len(starts)))
+  else:
+    idx = 0
+    while idx < len(starts):
+      start_idx = idx
+      end_idx = min(len(starts), idx + max_len)
+      chunk_ranges.append((start_idx, end_idx))
+      if end_idx == len(starts):
+        break
+      idx += stride
+
+  chunks_info = []
+  for start_idx, end_idx in chunk_ranges:
+    first_atom_idx = starts[start_idx]
+    last_atom_idx = starts[end_idx] if end_idx < len(starts) else len(array)
+    
+    chunk_array = array[first_atom_idx:last_atom_idx]
+    chunk_starts = struc.get_residue_starts(chunk_array)
+    chunk_res_ids = chunk_array.res_id[chunk_starts]
+    
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdb")
+    os.close(fd)
+    strucio.save_structure(tmp_path, chunk_array)
+    
+    chunks_info.append((tmp_path, chunk_res_ids))
+
+  return chunks_info
 
 
-def save_fusionprot_embeddings():
-  labels_df = pd.read_csv('residue_switch_labels.csv')
-  cif_dir = 'fixed_cif_files'
+def save_fusionprot_embeddings(data_file_path, cif_dir):
+  labels_df = pd.read_csv(data_file_path)
   grouped = labels_df.groupby('Raw_Input_ID')
   features_dict = {}
   
@@ -141,43 +144,50 @@ def save_fusionprot_embeddings():
 
   for raw_input_id, group in tqdm(grouped, desc="Extracting FusionProt Embeddings"):
     required_res_ids = group['Residue_ID'].unique()
-    tmp_pdb_path, real_res_ids = _load_and_extract_chain_to_pdb(raw_input_id, cif_dir, required_res_ids)
+    chunks_info = _load_and_extract_chain_to_pdb(raw_input_id, cif_dir)
     
-    if tmp_pdb_path is None:
+    if not chunks_info:
       print(f"\nWarning: Valid structure not found for {raw_input_id}. Skipping.")
       continue
       
-    try:
-      protein = data.Protein.from_pdb(
-        tmp_pdb_path, 
-        atom_feature=None, 
-        bond_feature=None, 
-        residue_feature="default"
-      )
-      
-      item = to_residue_view({"graph": protein})
-      graph = item["graph"]
-      batch = data.Protein.pack([graph]).to(device)
-      batch = gc_model(batch)
-      
-      input_feature = batch.node_feature.float()
-      
-      with torch.no_grad():
-        output = fusion_model(batch, input_feature)
-        embeddings = output["node_feature"].cpu().numpy()
-        
-    except Exception as e:
-      print(f"\nError processing {raw_input_id}: {e}")
-      continue 
-    finally:
-      if os.path.exists(tmp_pdb_path):
-        os.remove(tmp_pdb_path)
+    raw_res_to_embeds = {}
     
-    res_to_embed = {res_id: emb for res_id, emb in zip(real_res_ids[:len(embeddings)], embeddings)}
+    for tmp_pdb_path, real_res_ids in chunks_info:
+      try:
+        protein = data.Protein.from_pdb(
+          tmp_pdb_path, 
+          atom_feature=None, 
+          bond_feature=None, 
+          residue_feature="default"
+        )
+        
+        item = to_residue_view({"graph": protein})
+        graph = item["graph"]
+        batch = data.Protein.pack([graph]).to(device)
+        batch = gc_model(batch)
+        
+        input_feature = batch.node_feature.float()
+        
+        with torch.no_grad():
+          output = fusion_model(batch, input_feature)
+          embeddings = output["node_feature"].cpu().numpy()
+          
+        for res_id, emb in zip(real_res_ids[:len(embeddings)], embeddings):
+          if res_id not in raw_res_to_embeds:
+            raw_res_to_embeds[res_id] = []
+          raw_res_to_embeds[res_id].append(emb)
+          
+      except Exception as e:
+        print(f"\nError processing chunk for {raw_input_id}: {e}")
+        continue 
+      finally:
+        if os.path.exists(tmp_pdb_path):
+          os.remove(tmp_pdb_path)
     
     for res_id in required_res_ids:
-      if res_id in res_to_embed:
-        features_dict[(raw_input_id, res_id)] = res_to_embed[res_id]
+      if res_id in raw_res_to_embeds:
+        # Average the embeddings across chunks
+        features_dict[(raw_input_id, res_id)] = np.mean(raw_res_to_embeds[res_id], axis=0)
       else:
         print(f"\nWarning: Residue ID {res_id} not found in parsed embeddings for {raw_input_id}")
 
@@ -192,4 +202,6 @@ def save_fusionprot_embeddings():
 
 
 if __name__ == "__main__":
-  save_fusionprot_embeddings()
+  data_file_path='dataset/residue_switch_labels.csv'
+  cif_dir = 'dataset/fixed_cif_files'
+  save_fusionprot_embeddings(data_file_path, cif_dir)

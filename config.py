@@ -22,14 +22,11 @@ def get_args():
       type=int,
       default=3,
       help="k value (Used only if feature_type is 'kndrf' or 'kncsic')")
-  parser.add_argument('--n_trials',
-                      type=int,
-                      default=80,
-                      help="Number of Optuna trials per kernel type.")
+
   parser.add_argument(
       '--max_parallel_kernels',
       type=int,
-      default=4,
+      default=2,
       help="Max kernel processes to run concurrently on the GPU.")
   parser.add_argument('--tasks',
                       nargs='+',

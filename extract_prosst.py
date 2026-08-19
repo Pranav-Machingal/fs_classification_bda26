@@ -20,8 +20,8 @@ from prosst.structure.get_sst_seq import SSTPredictor
 
 def _load_and_extract_chain_to_pdb(raw_id, cif_dir, required_res_ids, target_path):
   """
-  Reads the CIF file, extracts the specific chain, applies memory-safe 
-  truncation (max 1022 residues), and writes it to a specific target path.
+  Reads the CIF file, extracts the specific chain, and writes it to a specific target path.
+  Full-length sequences are preserved natively.
   """
   source = os.path.join(cif_dir, f"{raw_id}.cif")
   try:
@@ -51,28 +51,6 @@ def _load_and_extract_chain_to_pdb(raw_id, cif_dir, required_res_ids, target_pat
     return None, None
 
   starts = struc.get_residue_starts(array)
-  if len(starts) > 1022:
-    real_res_ids = array.res_id[starts]
-    req_set = set(required_res_ids)
-    req_indices = [i for i, r in enumerate(real_res_ids) if r in req_set]
-    
-    if req_indices:
-      min_idx, max_idx = min(req_indices), max(req_indices)
-      if max_idx - min_idx >= 1022:
-        max_idx = min_idx + 1021
-          
-      center_idx = (min_idx + max_idx) // 2
-      start_idx = max(0, center_idx - 511)
-      end_idx = min(len(starts), start_idx + 1022)
-      
-      if end_idx - start_idx < 1022 and start_idx > 0:
-        start_idx = max(0, end_idx - 1022)
-          
-      first_atom_idx = starts[start_idx]
-      last_atom_idx = starts[end_idx] if end_idx < len(starts) else len(array)
-      array = array[first_atom_idx:last_atom_idx]
-      starts = struc.get_residue_starts(array)
-
   real_res_ids = array.res_id[starts]
   array.bonds = None 
 
@@ -84,9 +62,8 @@ def tokenize_structure_sequence(structure_sequence):
   shift_structure_sequence = [1, *shift_structure_sequence, 2]
   return torch.tensor([shift_structure_sequence], dtype=torch.long)
 
-def save_prosst_embeddings():
-  labels_df = pd.read_csv('residue_switch_labels.csv')
-  cif_dir = 'fixed_cif_files'
+def save_prosst_embeddings(data_file_path, cif_dir):
+  labels_df = pd.read_csv(data_file_path)
   grouped = labels_df.groupby('Raw_Input_ID')
   
   device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -167,4 +144,6 @@ def save_prosst_embeddings():
   print(f"\nSuccessfully saved {len(features_dict)} ProSST embeddings to {save_file_path}")
 
 if __name__ == "__main__":
-  save_prosst_embeddings()
+  data_file_path = 'dataset/residue_secondary_structures.csv'
+  cif_dir = 'dataset/fixed_cif_files'
+  save_prosst_embeddings(data_file_path, cif_dir)

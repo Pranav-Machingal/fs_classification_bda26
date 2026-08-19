@@ -111,9 +111,8 @@ def _load_and_extract_chain_to_pdb(raw_id, cif_dir, required_res_ids):
   return tmp_path, real_res_ids
 
 
-def save_fusionprot_embeddings():
-  labels_df = pd.read_csv('residue_switch_labels.csv')
-  cif_dir = 'fixed_cif_files'
+def save_fusionprot_embeddings(data_file_path, cif_dir):
+  labels_df = pd.read_csv(data_file_path)
   grouped = labels_df.groupby('Raw_Input_ID')
   features_dict = {}
   
@@ -192,4 +191,6 @@ def save_fusionprot_embeddings():
 
 
 if __name__ == "__main__":
-  save_fusionprot_embeddings()
+  data_file_path='dataset/residue_switch_labels.csv'
+  cif_dir = 'dataset/fixed_cif_files'
+  save_fusionprot_embeddings(data_file_path, cif_dir)

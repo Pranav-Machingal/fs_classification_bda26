@@ -96,9 +96,8 @@ def _get_saprot_embeddings(formatted_seq, model, tokenizer, device):
   return embeddings
 
 
-def save_saprot_embeddings():
-  labels_df = pd.read_csv('residue_switch_labels.csv')
-  cif_dir = 'fixed_cif_files'
+def save_saprot_embeddings(data_file_path, cif_dir):
+  labels_df = pd.read_csv(data_file_path)
   grouped = labels_df.groupby('Raw_Input_ID')
   features_dict = {}
   
@@ -147,4 +146,6 @@ def save_saprot_embeddings():
   print(f"\nSuccessfully saved {len(features_dict)} embeddings to {save_file_path}")
 
 if __name__ == "__main__":
-  save_saprot_embeddings()
+  data_file_path = 'dataset/residue_secondary_structures.csv'
+  cif_dir = 'dataset/fixed_cif_files'
+  save_saprot_embeddings(data_file_path, cif_dir)

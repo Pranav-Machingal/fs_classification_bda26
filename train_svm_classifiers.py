@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import joblib
-import optuna
+import itertools
 import multiprocessing as mp
 import gc
 
@@ -122,7 +122,7 @@ def _get_cuml_model_for_tuning(params, multi_strategy):
                    coef0=params.get('coef0', 0.0),
                    max_iter=10000,
                    random_state=42,
-                   cache_size=4096)
+                   cache_size=1024)
 
   if multi_strategy in ['ovo', 'ovr']:
     wrapped_base = CuMLWrapper(estimator=base_svm)
@@ -137,125 +137,156 @@ def _get_cuml_model_for_tuning(params, multi_strategy):
     return base_svm
 
 
-def worker_fit_and_score(params, multi_strategy, is_binary, r_plus, r_minus,
-                         child_conn):
+def worker_fit_and_score_pool(run_params, multi_strategy, is_binary, r_plus, r_minus):
   """
-  Isolated worker function executed in a dedicated forked process.
-  Trains the SVM model on the global training arrays and computes the validation Switch-F1 score.
-  Prevents cuML GPU context memory leaks during exhaustive Optuna tuning.
+  Isolated worker function executed in a multiprocessing Pool.
+  Trains the SVM model and computes validation scores concurrently.
   """
   try:
     import sklearn
     sklearn.set_config(enable_metadata_routing=True)
+    
     sample_weights = np.where(G_Y_TRAIN_BIN_RAW == 1, r_plus, r_minus)
-    model = _get_cuml_model_for_tuning(params, multi_strategy)
+    
+    model = _get_cuml_model_for_tuning(run_params, multi_strategy)
 
     model.fit(G_X_TRAIN, G_Y_TRAIN, sample_weight=sample_weights)
 
-    y_train_pred = model.predict(G_X_TRAIN)
+    # We never use train_f1 to select the best hyperparams. Computing predictions
+    # over the massive training set takes ~50% of the iteration time. Skip it.
     y_val_pred = model.predict(G_X_VAL)
 
-    if hasattr(y_train_pred, 'get'):
-      y_train_pred = y_train_pred.get()
-    elif hasattr(y_train_pred, 'to_numpy'):
-      y_train_pred = y_train_pred.to_numpy()
     if hasattr(y_val_pred, 'get'):
       y_val_pred = y_val_pred.get()
     elif hasattr(y_val_pred, 'to_numpy'):
       y_val_pred = y_val_pred.to_numpy()
 
-    train_f1 = compute_switch_f1(G_Y_TRAIN, y_train_pred, G_TRAIN_ORIG,
-                                 is_binary)
     val_f1 = compute_switch_f1(G_Y_VAL, y_val_pred, G_VAL_ORIG, is_binary)
 
-    child_conn.send({'train_f1': float(train_f1), 'val_f1': float(val_f1)})
+    # Cleanup explicitly to help prevent cuML context bloat inside the long-lived pool workers
+    del model
+    import gc
+    gc.collect()
+
+    return {'train_f1': -1.0, 'val_f1': float(val_f1), 'params': run_params}
   except Exception as e:
-    child_conn.send({'error': str(e)})
-  finally:
-    child_conn.close()
+    return {'error': str(e), 'params': run_params}
 
 
-def objective(trial, kernel, fixed_degree, multi_strategy, is_binary):
-  """
-  Optuna objective function for tuning SVM hyperparameters.
-  Samples C, gamma, coef0, and class weight parameter (a) from continuous probabilistic distributions.
-  """
-  C = trial.suggest_float("C", 1e-6, 1e3, log=True)
-  params = {'kernel': kernel, 'C': C}
+def _run_grid(param_grid_dict, kernel, fixed_degree, multi_strategy, is_binary, max_parallel_kernels, skip_params=None):
+  keys, values = zip(*param_grid_dict.items())
+  combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+  
+  best_f1 = -1.0
+  best_params = None
+  results = []
+  tasks = []
+  
+  import math
+  def is_eval(rp, skips):
+    if not skips: return False
+    for sp in skips:
+      match = True
+      for k, v in rp.items():
+        if k not in sp: match = False; break
+        if isinstance(v, float) and isinstance(sp[k], float):
+          if not math.isclose(v, sp[k], rel_tol=1e-5): match = False; break
+        elif v != sp[k]: match = False; break
+      if match: return True
+    return False
 
-  if kernel == 'rbf':
-    params['gamma'] = trial.suggest_float("gamma", 1e-6, 1e2, log=True)
-  elif kernel == 'poly':
-    params['gamma'] = trial.suggest_float("gamma", 1e-6, 1e-1, log=True)
-    params['coef0'] = trial.suggest_float("coef0", 0.0, 1.0)
-    params['degree'] = fixed_degree
-  else:
-    params['gamma'] = 'scale'
-
-  a = trial.suggest_float("a", 0.0001, 0.9999)
-  params['a'] = a
-
-  r_plus = 1.0 / (2.0 * a)
-  r_minus = 1.0 / (2.0 * (1.0 - a))
-
-  parent_conn, child_conn = mp.Pipe()
-
+  for params in combinations:
+    run_params = {'kernel': kernel, 'C': params['C'], 'a': params['a']}
+    if kernel == 'rbf':
+      run_params['gamma'] = params['gamma']
+    elif kernel == 'poly':
+      run_params['gamma'] = params['gamma']
+      run_params['coef0'] = params['coef0']
+      run_params['degree'] = fixed_degree
+    else:
+      run_params['gamma'] = 'scale'
+      
+    if is_eval(run_params, skip_params):
+      continue
+      
+    r_plus = 1.0 / (2.0 * run_params['a'])
+    r_minus = 1.0 / (2.0 * (1.0 - run_params['a']))
+    
+    tasks.append((run_params, multi_strategy, is_binary, r_plus, r_minus))
+    
   ctx = mp.get_context('fork')
-  p = ctx.Process(target=worker_fit_and_score,
-                  args=(params, multi_strategy, is_binary, r_plus, r_minus,
-                        child_conn))
-  p.start()
-
-  child_conn.close()  # Close in parent to prevent fd leak
-
-  p.join()
-
-  if parent_conn.poll():
-    return_dict = parent_conn.recv()
-  else:
-    return_dict = {'error': 'Process crashed or died out of memory.'}
-
-  parent_conn.close()
-
-  if 'error' in return_dict:
-    label = f"{kernel}(d={fixed_degree})" if fixed_degree else kernel
-    print(f"  Warning: {label} trial failed: {return_dict['error']}")
-    return -1.0
-
-  train_f1 = return_dict['train_f1']
-  val_f1 = return_dict['val_f1']
-
-  gap = train_f1 - val_f1
-
-  trial.set_user_attr("train_f1", train_f1)
-  trial.set_user_attr("val_f1", val_f1)
-  trial.set_user_attr("gap", gap)
-
-  # Return regular Switch-F1 instead of penalized score
-  return val_f1
+  with ctx.Pool(processes=max_parallel_kernels, maxtasksperchild=1) as pool:
+    outputs = pool.starmap(worker_fit_and_score_pool, tasks)
+    
+  for return_dict in outputs:
+    run_params = return_dict['params']
+    if 'error' not in return_dict:
+      val_f1 = return_dict['val_f1']
+      if val_f1 > best_f1:
+        best_f1 = val_f1
+        best_params = run_params.copy()
+        
+      res_dict = run_params.copy()
+      res_dict['val_f1'] = val_f1
+      res_dict['train_f1'] = return_dict['train_f1']
+      results.append(res_dict)
+    else:
+      label = f"{kernel}(d={fixed_degree})" if fixed_degree else kernel
+      print(f"  Warning: {label} trial failed: {return_dict['error']}")
+      
+  return best_params, best_f1, results
 
 
-def tune_kernel_study(kernel_spec, multi_strategy, is_binary, n_trials,
-                      db_path_str, study_name, n_jobs):
+def tune_kernel_grid(kernel_spec, multi_strategy, is_binary, study_name, max_parallel_kernels):
   if isinstance(kernel_spec, tuple):
     kernel, fixed_degree = kernel_spec
   else:
     kernel, fixed_degree = kernel_spec, None
-
-  study = optuna.create_study(study_name=study_name,
-                              storage=f"sqlite:///{db_path_str}",
-                              load_if_exists=True,
-                              direction="maximize",
-                              sampler=optuna.samplers.TPESampler(seed=42))
-
-  study.optimize(lambda trial: objective(trial, kernel, fixed_degree,
-                                         multi_strategy, is_binary),
-                 n_trials=n_trials,
-                 n_jobs=n_jobs)
-
-  label = f"{kernel}(d={fixed_degree})" if fixed_degree else kernel
-  print(f"  -> {label}: Best Switch-F1 = {study.best_value:.4f}")
-  return study
+    
+  coarse_grid = {
+    'C': [1e-4, 1e-2, 1.0, 1e2, 1e4],
+    'a': [0.1, 0.3, 0.5, 0.7, 0.9]
+  }
+  if kernel == 'linear':
+    coarse_grid['C'] = [1e-4, 1e-2, 1.0, 1e2]
+    coarse_grid['a'] = [0.1, 0.3, 0.5]
+  elif kernel == 'rbf':
+    coarse_grid['gamma'] = [1e-4, 1e-3, 1e-2, 1e-1]
+  elif kernel == 'poly':
+    coarse_grid['gamma'] = [1e-4, 1e-3, 1e-2, 1e-1]
+    coarse_grid['coef0'] = [0.0, 0.25, 0.5, 0.75, 1.0]
+    
+  print(f"    -> Running Coarse Grid for {study_name}...")
+  best_c_params, best_c_f1, c_results = _run_grid(coarse_grid, kernel, fixed_degree, multi_strategy, is_binary, max_parallel_kernels)
+  
+  if best_c_params is None:
+    return None, -1.0, []
+    
+  fine_grid = {
+    'C': [best_c_params['C'] / 10.0, best_c_params['C'] / 3.0, best_c_params['C'], best_c_params['C'] * 3.0, best_c_params['C'] * 10.0],
+    'a': [max(0.01, best_c_params['a'] - 0.1), max(0.01, best_c_params['a'] - 0.05), best_c_params['a'], min(0.99, best_c_params['a'] + 0.05), min(0.99, best_c_params['a'] + 0.1)]
+  }
+  if kernel == 'rbf':
+    fine_grid['gamma'] = [best_c_params['gamma'] / 10.0, best_c_params['gamma'] / 3.0, best_c_params['gamma'], best_c_params['gamma'] * 3.0, best_c_params['gamma'] * 10.0]
+  elif kernel == 'poly':
+    fine_grid['gamma'] = [best_c_params['gamma'] / 10.0, best_c_params['gamma'] / 3.0, best_c_params['gamma'], best_c_params['gamma'] * 3.0, best_c_params['gamma'] * 10.0]
+    fine_grid['coef0'] = [max(0.0, best_c_params['coef0'] - 0.2), max(0.0, best_c_params['coef0'] - 0.1), best_c_params['coef0'], min(1.0, best_c_params['coef0'] + 0.1), min(1.0, best_c_params['coef0'] + 0.2)]
+    
+  print(f"    -> Running Fine Grid for {study_name}...")
+  evaluated_params = [{k: v for k, v in res.items() if k not in ['val_f1', 'train_f1']} for res in c_results]
+  best_f_params, best_f_f1, f_results = _run_grid(fine_grid, kernel, fixed_degree, multi_strategy, is_binary, max_parallel_kernels, skip_params=evaluated_params)
+  
+  all_results = c_results + f_results
+  
+  if best_f_f1 > best_c_f1:
+    best_params = best_f_params
+    best_f1 = best_f_f1
+  else:
+    best_params = best_c_params
+    best_f1 = best_c_f1
+    
+  print(f"  -> {study_name}: Best Switch-F1 = {best_f1:.4f}")
+  return best_params, best_f1, all_results
 
 
 def _build_final_model(params, multi_strategy):
@@ -270,7 +301,7 @@ def _build_final_model(params, multi_strategy):
                    random_state=42,
                    max_iter=10000,
                    probability=True,
-                   cache_size=4096)
+                   cache_size=1024)
 
   if multi_strategy in ['ovo', 'ovr']:
     wrapped_base = CuMLWrapper(estimator=base_svm)
@@ -332,6 +363,9 @@ def evaluate_and_summarize(best_model,
   elif hasattr(y_score, 'to_numpy'):
     y_score = y_score.to_numpy()
 
+  test_switch_f1 = compute_switch_f1(y_test, y_test_pred, test_orig, is_binary)
+  print(f"     Test Switch-F1 Score: {test_switch_f1:.4f}")
+
   metrics, cm, curves = compute_test_metrics(y_test,
                                              y_test_pred,
                                              y_score,
@@ -370,12 +404,12 @@ def tune_and_evaluate(X_train,
                       train_orig,
                       y_train_bin,
                       val_orig,
+                      y_val_bin,
                       test_orig,
                       y_test_raw,
                       dirs,
                       multi_strategy=None,
-                      n_trials=80,
-                      max_parallel_kernels=4):
+                      max_parallel_kernels=2):
   summary_path = dirs['metrics'] / f'{task_name}_test_summary.pkl'
   tuning_csv_path = dirs['tuning'] / f'{task_name}_tuning.csv'
   f1_model_path = dirs['models'] / f'{task_name}_best_f1_model.joblib'
@@ -388,7 +422,7 @@ def tune_and_evaluate(X_train,
     return LazyLoadedModel(f1_model_path)
 
   print(
-      f"\n--- Tuning via Optuna: {task_name} ({n_trials} trials/kernel, max {max_parallel_kernels} concurrent processes) ---"
+      f"\n--- Tuning via Grid Search: {task_name} (max {max_parallel_kernels} concurrent processes) ---"
   )
 
   global G_X_TRAIN, G_Y_TRAIN, G_X_VAL, G_Y_VAL, G_TRAIN_ORIG, G_VAL_ORIG, G_Y_TRAIN_BIN_RAW
@@ -399,8 +433,6 @@ def tune_and_evaluate(X_train,
   G_TRAIN_ORIG = train_orig
   G_VAL_ORIG = val_orig
   G_Y_TRAIN_BIN_RAW = y_train_bin
-
-  optuna.logging.set_verbosity(optuna.logging.WARNING)
 
   kernel_specs = ['linear', 'rbf', ('poly', 2), ('poly', 3)]
 
@@ -415,29 +447,24 @@ def tune_and_evaluate(X_train,
     else:
       kernel, degree, label = kernel_spec, None, kernel_spec
 
-    db_path = dirs['tuning'] / f"{task_name}_{label}_optuna.db"
     study_name = f"{task_name}_{label}"
 
-    study = tune_kernel_study(kernel_spec, multi_strategy, is_binary, n_trials,
-                              str(db_path.absolute()), study_name,
-                              max_parallel_kernels)
+    kernel_best_params, kernel_best_score, kernel_results = tune_kernel_grid(
+        kernel_spec, multi_strategy, is_binary, study_name, max_parallel_kernels)
 
-    completed = [
-        t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
-    ]
-    if completed and study.best_value > best_score:
-      best_score = study.best_value
-      bp = study.best_params.copy()
-      bp['kernel'] = kernel
+    if kernel_best_params is not None and kernel_best_score > best_score:
+      best_score = kernel_best_score
+      best_params = kernel_best_params.copy()
+      best_params['kernel'] = kernel
       if degree is not None:
-        bp['degree'] = degree
-      if 'gamma' not in bp:
-        bp['gamma'] = 'scale'
-      best_params = bp
+        best_params['degree'] = degree
+      if 'gamma' not in best_params:
+        best_params['gamma'] = 'scale'
 
-    df = study.trials_dataframe()
-    df['kernel_type'] = label
-    all_trials.append(df)
+    if kernel_results:
+      df = pd.DataFrame(kernel_results)
+      df['kernel_type'] = label
+      all_trials.append(df)
 
   if best_params is None:
     raise RuntimeError(
@@ -451,10 +478,14 @@ def tune_and_evaluate(X_train,
     combined_df = pd.concat(all_trials, ignore_index=True)
     combined_df.to_csv(tuning_csv_path, index=False)
 
-  sample_weights = get_weights(y_train_bin, best_params['a'])
+  X_train_val = np.vstack((X_train, X_val))
+  y_train_val = np.concatenate((y_train, y_val))
+  y_train_val_bin = np.concatenate((y_train_bin, y_val_bin))
+
+  sample_weights = get_weights(y_train_val_bin, best_params['a'])
   
   ctx = mp.get_context('fork')
-  p = ctx.Process(target=_fit_and_eval_worker, args=(best_params, multi_strategy, X_train, y_train, sample_weights, f1_model_path, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs))
+  p = ctx.Process(target=_fit_and_eval_worker, args=(best_params, multi_strategy, X_train_val, y_train_val, sample_weights, f1_model_path, X_test, y_test, is_binary, classes, task_name, test_orig, y_test_raw, dirs))
   p.start()
   p.join()
   
@@ -474,11 +505,11 @@ def run_multi_class_suite(X_train,
                           train_orig,
                           y_train_bin,
                           val_orig,
+                          y_val_bin,
                           test_orig,
                           y_test_raw,
                           dirs,
-                          n_trials=80,
-                          max_parallel_kernels=4):
+                          max_parallel_kernels=2):
   mdls = {}
   mdls['CommonC_OvO'] = tune_and_evaluate(
       X_train,
@@ -491,11 +522,11 @@ def run_multi_class_suite(X_train,
       train_orig,
       y_train_bin,
       val_orig,
+      y_val_bin,
       test_orig,
       y_test_raw,
       dirs,
       multi_strategy='ovo',
-      n_trials=n_trials,
       max_parallel_kernels=max_parallel_kernels)
   mdls['CommonC_OvR'] = tune_and_evaluate(
       X_train,
@@ -508,11 +539,11 @@ def run_multi_class_suite(X_train,
       train_orig,
       y_train_bin,
       val_orig,
+      y_val_bin,
       test_orig,
       y_test_raw,
       dirs,
       multi_strategy='ovr',
-      n_trials=n_trials,
       max_parallel_kernels=max_parallel_kernels)
   return mdls
 
@@ -532,8 +563,8 @@ if __name__ == "__main__":
       'X_test'], data['y_test_raw'], data['y_test_bin'], data[
           'y_test_3c'], data['test_orig'], data['test_states_idx']
 
-  # Ensure max_parallel_kernels exists in args (default to 4 if removed from config.py)
-  max_parallel_kernels = getattr(args, 'max_parallel_kernels', 4)
+  # Ensure max_parallel_kernels exists in args (default to 2 if removed from config.py)
+  max_parallel_kernels = getattr(args, 'max_parallel_kernels', 2)
 
   print(
       f"\n===================================================================")
@@ -551,10 +582,10 @@ if __name__ == "__main__":
                       train_orig,
                       y_train_bin,
                       val_orig,
+                      y_val_bin,
                       test_orig,
                       y_test_raw,
                       dirs,
-                      n_trials=args.n_trials,
                       max_parallel_kernels=max_parallel_kernels)
 
   if 'global_3class' in args.tasks:
@@ -568,10 +599,10 @@ if __name__ == "__main__":
                           train_orig,
                           y_train_bin,
                           val_orig,
+                          y_val_bin,
                           test_orig,
                           y_test_raw,
                           dirs,
-                          n_trials=args.n_trials,
                           max_parallel_kernels=max_parallel_kernels)
 
   if 'input_dep_binary' in args.tasks or 'input_dep_3class' in args.tasks:
@@ -598,10 +629,10 @@ if __name__ == "__main__":
                                     train_orig[m_train],
                                     y_train_bin[m_train],
                                     val_orig[m_val],
+                                    y_val_bin[m_val],
                                     test_orig[m_test],
                                     y_test_raw[m_test],
                                     dirs,
-                                    n_trials=args.n_trials,
                                     max_parallel_kernels=max_parallel_kernels)
         collected_bin_models[state_idx] = bin_mdl
 
@@ -617,10 +648,10 @@ if __name__ == "__main__":
             train_orig[m_train],
             y_train_bin[m_train],
             val_orig[m_val],
+            y_val_bin[m_val],
             test_orig[m_test],
             y_test_raw[m_test],
             dirs,
-            n_trials=args.n_trials,
             max_parallel_kernels=max_parallel_kernels)
         for variant, variant_models in mc_mdls.items():
           collected_3c_models[variant][state_idx] = variant_models

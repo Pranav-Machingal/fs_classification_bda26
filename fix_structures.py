@@ -1,5 +1,6 @@
 import os
 import glob
+import argparse
 from pdbfixer import PDBFixer
 import biotite.structure.io as strucio
 from openmm.app import PDBxFile
@@ -8,22 +9,34 @@ import numpy as np
 
 import pandas as pd
 
-data_df = pd.read_csv("Morpheus_Supplement/output_results/training_data.csv")
-for raw_id in tqdm(data_df['PDB_ID'], total=len(data_df)):
-  """
-  Uses PDBFixer to isolate a specific chain or entity, adds missing atoms, 
-  and removes all other chains (including duplicate instances) from the structure.
-  """
-  tqdm.write(f"\nProcessing {raw_id}...")
-  try:
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser(description="Fix and isolate PDB chains.")
+  parser.add_argument("--redo", action="store_true", help="Redo fixing, overwriting existing files.")
+  args = parser.parse_args()
+
+  os.makedirs("dataset/fixed_cif_files", exist_ok=True)
+
+  data_df = pd.read_csv("dataset/training_data.csv")
+  for raw_id in tqdm(data_df['PDB_ID'], total=len(data_df)):
+    """
+    Uses PDBFixer to isolate a specific chain or entity, adds missing atoms, 
+    and removes all other chains (including duplicate instances) from the structure.
+    """
+    output_cif = f"dataset/fixed_cif_files/{raw_id}.cif"
+    if not args.redo and os.path.exists(output_cif):
+      # tqdm.write(f"\nSkipping {raw_id}, already exists.") # Optional, could be noisy
+      continue
+
+    tqdm.write(f"\nProcessing {raw_id}...")
+    try:
     # 1. Resolve the Target Chain ID
     if "." in raw_id:
       pdb_id, target_chain = raw_id.split(".", 1)
       tqdm.write(f"  -> Resolved PDB ID {pdb_id} to Chain {target_chain}")
-      input_cif = f"cif_files/{pdb_id}.cif"
+      input_cif = f"dataset/cif_files/{pdb_id}.cif"
     elif "_" in raw_id:
       pdb_id, entity_id = raw_id.split("_", 1)
-      input_cif = f"cif_files/{pdb_id}.cif"
+      input_cif = f"dataset/cif_files/{pdb_id}.cif"
       
       # PDBFixer doesn't read entity IDs, so we use Biotite to find the mapping
       array = strucio.load_structure(input_cif, model=1, extra_fields=["label_entity_id"])
@@ -73,7 +86,6 @@ for raw_id in tqdm(data_df['PDB_ID'], total=len(data_df)):
     fixer.addMissingHydrogens(7.0)
   
     # 5. Save the perfectly clean, single-chain structure
-    output_cif = f"fixed_cif_files/{raw_id}.cif"
     with open(output_cif, 'w') as f:
       PDBxFile.writeFile(fixer.topology, fixer.positions, f)
       

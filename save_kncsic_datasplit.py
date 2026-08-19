@@ -5,10 +5,7 @@ from tqdm.auto import tqdm
 from pathlib import Path
 import sys
 
-labels_df = pd.read_csv('residue_switch_labels.csv')
-train_val_dict = pickle.load(open('train_val_split0.pkl', 'rb'))
-train_ids = train_val_dict['train']
-val_ids = train_val_dict['val']
+labels_df = pd.read_csv('dataset/data_split.csv')
 d103_features_dict = pickle.load(open('saved_data/feature_extraction/kncsic_103d_features.pkl', 'rb'))
 
 switch_labels = [f'{s1}/{s2}' for s1 in ['a', 'b', 'c'] for s2 in ['a', 'b', 'c']]
@@ -22,12 +19,12 @@ def save_kncsic_feature_data_splits(k):
   y_test_list = []
   
   for _, row in tqdm(labels_df.iterrows(), total=len(labels_df), desc=f"Building k={k} Data Split"):
-    if row['switch_SS_label'] != 'x':
+    if row.get('Switch_Label', 'x') != 'x':
       chain_id = row['Raw_Input_ID']
       center_res_id = row['Residue_ID']
       key = (chain_id, center_res_id)
       
-      label = f"{row['SS_Label']}/{row['switch_SS_label']}"
+      label = f"{row['SS_Label']}/{row['Switch_Label']}"
       label_idx = switch_labels.index(label)
       
       # Construct the (2k+1) * 103 feature vector
@@ -45,13 +42,14 @@ def save_kncsic_feature_data_splits(k):
       # Flatten the list of arrays into a single 1D array
       k_mer_feature = np.concatenate(k_mer_feature)
   
-      if key in train_ids:
+      split = row['split']
+      if split == 'train':
         X_train_list.append(k_mer_feature)
         y_train_list.append(label_idx)
-      elif key in val_ids:
+      elif split == 'val':
         X_val_list.append(k_mer_feature)
         y_val_list.append(label_idx)
-      else:
+      elif split == 'test':
         X_test_list.append(k_mer_feature)
         y_test_list.append(label_idx)
   
@@ -72,5 +70,5 @@ def save_kncsic_feature_data_splits(k):
   print(f"Saved {save_file_path}")
 
 if __name__ == "__main__":
-  for k in range(1, 21):
+  for k in range(1, 25):
     save_kncsic_feature_data_splits(k)

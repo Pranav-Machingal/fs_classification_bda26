@@ -4,6 +4,92 @@ import numpy as np
 import pandas as pd
 import pickle
 from pathlib import Path
+import io
+import biotite.database.rcsb as rcsb
+import biotite.structure.io as strucio
+import biotite.structure.io.pdb as pdb
+import py3Dmol
+
+def view_pdb_chain(raw_id, datadir=None):
+  # Determine if the suffix is an Entity ID (underscore) or Chain ID (period)
+  if "_" in raw_id:
+    pdb_id, entity_id = raw_id.split("_", 1)
+    chain_id = None
+  elif "." in raw_id:
+    pdb_id, chain_id = raw_id.split(".", 1)
+    entity_id = None
+  else:
+    pdb_id = raw_id
+    chain_id = None
+    entity_id = None
+
+  print(f"Fetching PDB: {pdb_id}", end="")
+  if entity_id:
+    print(f", Entity: {entity_id}", end="")
+  if chain_id:
+    print(f", Chain: {chain_id}", end="")
+  print()
+
+  try:
+    # Fetch as 'cif' because the legacy PDB format does not store Entity IDs
+    if datadir:
+      file_path = f"{datadir}/{pdb_id}.cif"
+    else:
+      file_path = rcsb.fetch(pdb_id, "cif")
+
+    # Load structure and explicitly request the entity ID annotations
+    array = strucio.load_structure(
+      file_path, 
+      model=1, 
+      extra_fields=["label_entity_id"]
+    )
+  except Exception as e:
+    print(f"Failed to fetch or parse {pdb_id}: {e}")
+    return None
+
+  # If an Entity ID was provided, map it to its first physical chain
+  if entity_id:
+    # Create a mask for atoms matching the target entity
+    entity_mask = (array.label_entity_id == str(entity_id))
+    
+    if not np.any(entity_mask):
+      print(f"Warning: Entity '{entity_id}' not found in {pdb_id}.")
+      return None
+      
+    # Find all unique chain IDs that correspond to this entity
+    entity_chains = np.unique(array.chain_id[entity_mask])
+    
+    # Take the first physical chain representing this entity
+    chain_id = entity_chains[0]
+    print(f"-> Resolved Entity {entity_id} to Chain '{chain_id}'")
+
+  # Isolate the requested (or resolved) chain
+  if chain_id:
+    array = array[array.chain_id == chain_id]
+    if len(array) == 0:
+      print(f"Warning: Chain '{chain_id}' not found in {pdb_id}.")
+      return None
+
+  # Py3Dmol requires a standard PDB string to render
+  out_file = pdb.PDBFile()
+  pdb.set_structure(out_file, array)
+  buffer = io.StringIO()
+  out_file.write(buffer)
+  pdb_string = buffer.getvalue()
+
+  # Render the structure interactively using py3Dmol
+  view = py3Dmol.view(width=800, height=500)
+  view.addModel(pdb_string, "pdb")
+  
+  # Apply a spectrum coloring to the cartoon representation
+  view.setStyle({'cartoon': {'color': 'spectrum'}})
+  view.zoomTo()
+  
+  return view.show()
+
+# Example usage:
+# view_pdb_chain("2N0A.D")
+# view_pdb_chain("1LMB_3")
 
 def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fusionprot', k=3):
   """
@@ -66,7 +152,7 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   gs_top = gs[0].subgridspec(1, n_tune_plots, wspace=0.2)
   # Bottom row is strictly 4 columns for the metrics
   is_binary = "Binary" in task_name
-  gs_bottom = gs[1].subgridspec(1, 3, wspace=0.25, width_ratios=[0.7, 1.0, 1.2 if is_binary else 2.0])
+  gs_bottom = gs[1].subgridspec(1, 3, wspace=0.25, width_ratios=[0.7, 1.0 if is_binary else 1.2, 1.2 if is_binary else 1.7])
   
   # --- ROW 1: Best Hyperparameters (1 for each sub-model) ---
   for i, sub_task in enumerate(sub_models):
@@ -182,7 +268,7 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   ]
   bar_colors = ['#ff9999', '#ff9999', '#99ccff', '#99ccff']
   
-  bars = ax_bin.bar(bar_labels, bar_values, color=bar_colors, edgecolor='black')
+  bars = ax_bin.bar(bar_labels, bar_values, color=bar_colors, edgecolor='black', width=0.8 if is_binary else 0.9)
   ax_bin.set_ylim(0, 1.1)
   ax_bin.set_title('Global Binary Performance', fontweight='bold', fontsize=20)
   ax_bin.set_ylabel('Score', fontsize=18)
@@ -203,7 +289,7 @@ def plot_comprehensive_evaluation(task_name, metric_focus='f1', feature_type='fu
   s_labels = [f"{fmt(k)}\n(n={sm[k]['support']})" for k in s_keys]
   
   x = np.arange(len(s_keys))
-  width = 0.55 if is_binary else 0.42
+  width = 0.55 if is_binary else 0.38
   if s_keys:
     s_p = [sm[k]['precision'] for k in s_keys]
     s_r = [sm[k]['recall'] for k in s_keys]
